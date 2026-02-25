@@ -30,8 +30,10 @@ public:
     // Complexity: O(bucket_size + k log k) where k = number of matches
     std::vector<int> find_values(const std::string& index);
 
-    // Delete operation (deferred to M2)
-    // void delete_entry(const std::string& index, int value);
+    // Delete an entry with the given index and value
+    // If the entry doesn't exist, operation is silently ignored
+    // Complexity: O(bucket_size) - needs to load, modify, and rewrite bucket
+    void delete_entry(const std::string& index, int value);
 
 private:
     static const int NUM_BUCKETS = 20;
@@ -45,8 +47,8 @@ private:
     // Load all entries from a bucket file into memory
     std::vector<Entry> load_bucket(int bucket_id);
 
-    // Save entries back to a bucket file (for delete operation)
-    // void save_bucket(int bucket_id, const std::vector<Entry>& entries);
+    // Save entries back to a bucket file (overwrites existing file)
+    void save_bucket(int bucket_id, const std::vector<Entry>& entries);
 
     // Append a single entry to a bucket file
     void append_to_bucket(int bucket_id, const Entry& entry);

@@ -123,3 +123,49 @@ std::vector<int> BucketManager::find_values(const std::string& index) {
 
     return values;
 }
+
+void BucketManager::save_bucket(int bucket_id, const std::vector<Entry>& entries) {
+    std::string filename = get_bucket_filename(bucket_id);
+
+    // Open in binary write mode (truncate existing file)
+    std::ofstream file(filename, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return;
+    }
+
+    // Write all entries
+    for (const auto& entry : entries) {
+        uint8_t idx_length = static_cast<uint8_t>(entry.index.length());
+        uint8_t flags = entry.active ? 0x01 : 0x00;
+        int32_t value = entry.value;
+
+        file.write(reinterpret_cast<const char*>(&idx_length), 1);
+        file.write(entry.index.c_str(), idx_length);
+        file.write(reinterpret_cast<const char*>(&value), sizeof(int32_t));
+        file.write(reinterpret_cast<const char*>(&flags), 1);
+    }
+
+    file.close();
+}
+
+void BucketManager::delete_entry(const std::string& index, int value) {
+    int bucket_id = hash_bucket(index);
+
+    // Load all entries from the bucket
+    std::vector<Entry> entries = load_bucket(bucket_id);
+
+    // Find and remove the entry (if it exists)
+    bool found = false;
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+        if (it->active && it->index == index && it->value == value) {
+            entries.erase(it);
+            found = true;
+            break;
+        }
+    }
+
+    // If we found and removed an entry, rewrite the bucket
+    if (found) {
+        save_bucket(bucket_id, entries);
+    }
+}

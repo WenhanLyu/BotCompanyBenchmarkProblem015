@@ -27,8 +27,7 @@ int main() {
             string index;
             int value;
             cin >> index >> value;
-            // Delete operation deferred to M2
-            // For now, just read and ignore the delete command
+            manager.delete_entry(index, value);
         }
         else if (command == "find") {
             string index;
