@@ -91,48 +91,81 @@ void BucketManager::insert_entry(const std::string& index, int value) {
     int bucket_id = hash_bucket(index);
     std::string filename = get_bucket_filename(bucket_id);
 
-    // Stream through the file to check for duplicates without loading entire bucket
-    std::ifstream file(filename, std::ios::binary);
-    if (file) {
-        // Configure larger buffer for better I/O performance
-        char buffer[65536];
-        file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
+    // Open file in read/write mode (ios::ate positions at end initially)
+    // This allows us to check for duplicates AND append in a single file open
+    std::fstream file(filename, std::ios::in | std::ios::out | std::ios::binary | std::ios::ate);
 
-        uint8_t idx_length;
-        while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-            // Read index string
-            std::string entry_index(idx_length, '\0');
-            if (!file.read(&entry_index[0], idx_length)) {
-                break;
-            }
-
-            // Read value
-            int32_t entry_value;
-            if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
-                break;
-            }
-
-            // Read flags
-            uint8_t flags;
-            if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
-                break;
-            }
-
-            bool active = (flags == 0x01);
-
-            // Check for duplicate
-            if (active && entry_index == index && entry_value == value) {
-                // Duplicate found, do not insert
-                file.close();
-                return;
-            }
+    if (!file) {
+        // File doesn't exist, create it and append the entry
+        std::ofstream new_file(filename, std::ios::binary | std::ios::app);
+        if (!new_file) {
+            return;
         }
-        file.close();
+
+        uint8_t idx_length = static_cast<uint8_t>(index.length());
+        uint8_t flags = 0x01;
+        int32_t val = value;
+
+        new_file.write(reinterpret_cast<const char*>(&idx_length), 1);
+        new_file.write(index.c_str(), idx_length);
+        new_file.write(reinterpret_cast<const char*>(&val), sizeof(int32_t));
+        new_file.write(reinterpret_cast<const char*>(&flags), 1);
+
+        new_file.close();
+        return;
     }
 
-    // No duplicate found, safe to append
-    Entry entry(index, value, true);
-    append_to_bucket(bucket_id, entry);
+    // Configure larger buffer for better I/O performance
+    char buffer[65536];
+    file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
+
+    // Seek to beginning to check for duplicates
+    file.seekg(0, std::ios::beg);
+
+    uint8_t idx_length;
+    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+        // Read index string
+        std::string entry_index(idx_length, '\0');
+        if (!file.read(&entry_index[0], idx_length)) {
+            break;
+        }
+
+        // Read value
+        int32_t entry_value;
+        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
+            break;
+        }
+
+        // Read flags
+        uint8_t flags;
+        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
+            break;
+        }
+
+        bool active = (flags == 0x01);
+
+        // Check for duplicate
+        if (active && entry_index == index && entry_value == value) {
+            // Duplicate found, do not insert
+            file.close();
+            return;
+        }
+    }
+
+    // No duplicate found, seek to end and append
+    file.clear(); // Clear any error flags from read loop
+    file.seekp(0, std::ios::end);
+
+    uint8_t new_idx_length = static_cast<uint8_t>(index.length());
+    uint8_t new_flags = 0x01;
+    int32_t new_value = value;
+
+    file.write(reinterpret_cast<const char*>(&new_idx_length), 1);
+    file.write(index.c_str(), new_idx_length);
+    file.write(reinterpret_cast<const char*>(&new_value), sizeof(int32_t));
+    file.write(reinterpret_cast<const char*>(&new_flags), 1);
+
+    file.close();
 }
 
 std::vector<int> BucketManager::find_values(const std::string& index) {
