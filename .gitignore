@@ -1,0 +1,23 @@
+# CMake build artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Build output
+code
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Object files
+*.o
+*.obj
+
+# Data files created during testing
+*.dat
+*.bin
