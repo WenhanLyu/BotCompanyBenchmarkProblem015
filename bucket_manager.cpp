@@ -3,6 +3,7 @@
 #include <fstream>
 #include <functional>
 #include <cstring>
+#include <cstdint>
 
 BucketManager::BucketManager() {
     // Bucket files are created on-demand when first written
@@ -10,7 +11,18 @@ BucketManager::BucketManager() {
 }
 
 int BucketManager::hash_bucket(const std::string& index) const {
-    return std::hash<std::string>{}(index) % NUM_BUCKETS;
+    // FNV-1a hash - deterministic and portable across platforms
+    // FNV offset basis (64-bit)
+    uint64_t hash = 14695981039346656037ULL;
+    // FNV prime (64-bit)
+    const uint64_t fnv_prime = 1099511628211ULL;
+
+    for (char c : index) {
+        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
+        hash *= fnv_prime;
+    }
+
+    return static_cast<int>(hash % NUM_BUCKETS);
 }
 
 std::string BucketManager::get_bucket_filename(int bucket_id) const {
