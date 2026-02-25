@@ -22,17 +22,20 @@ public:
 
     // Insert an entry into the appropriate bucket
     // Prevents duplicate (index, value) pairs per spec
-    // Complexity: O(bucket_size) - needs to check for duplicates
+    // Uses streaming file reads to minimize memory usage
+    // Complexity: O(bucket_size) - streams through file to check for duplicates
     void insert_entry(const std::string& index, int value);
 
     // Find all values for a given index, returned in sorted order
     // Returns empty vector if no matching entries found
+    // Uses streaming file reads to minimize memory usage
     // Complexity: O(bucket_size + k log k) where k = number of matches
     std::vector<int> find_values(const std::string& index);
 
     // Delete an entry with the given index and value
     // If the entry doesn't exist, operation is silently ignored
-    // Complexity: O(bucket_size) - needs to load, modify, and rewrite bucket
+    // Uses streaming file reads with temporary file for rewrite
+    // Complexity: O(bucket_size) - streams through file to rewrite without deleted entry
     void delete_entry(const std::string& index, int value);
 
 private:

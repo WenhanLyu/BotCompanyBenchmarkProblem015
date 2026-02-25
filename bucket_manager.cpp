@@ -89,16 +89,45 @@ std::vector<Entry> BucketManager::load_bucket(int bucket_id) {
 
 void BucketManager::insert_entry(const std::string& index, int value) {
     int bucket_id = hash_bucket(index);
+    std::string filename = get_bucket_filename(bucket_id);
 
-    // Load existing entries to check for duplicates
-    std::vector<Entry> entries = load_bucket(bucket_id);
+    // Stream through the file to check for duplicates without loading entire bucket
+    std::ifstream file(filename, std::ios::binary);
+    if (file) {
+        while (file.peek() != EOF) {
+            uint8_t idx_length;
+            if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+                break;
+            }
 
-    // Check if (index, value) pair already exists
-    for (const auto& entry : entries) {
-        if (entry.active && entry.index == index && entry.value == value) {
-            // Duplicate found, do not insert
-            return;
+            // Read index string
+            std::string entry_index(idx_length, '\0');
+            if (!file.read(&entry_index[0], idx_length)) {
+                break;
+            }
+
+            // Read value
+            int32_t entry_value;
+            if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
+                break;
+            }
+
+            // Read flags
+            uint8_t flags;
+            if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
+                break;
+            }
+
+            bool active = (flags == 0x01);
+
+            // Check for duplicate
+            if (active && entry_index == index && entry_value == value) {
+                // Duplicate found, do not insert
+                file.close();
+                return;
+            }
         }
+        file.close();
     }
 
     // No duplicate found, safe to append
@@ -108,15 +137,49 @@ void BucketManager::insert_entry(const std::string& index, int value) {
 
 std::vector<int> BucketManager::find_values(const std::string& index) {
     int bucket_id = hash_bucket(index);
-    std::vector<Entry> entries = load_bucket(bucket_id);
-
-    // Collect all active values matching the index
+    std::string filename = get_bucket_filename(bucket_id);
     std::vector<int> values;
-    for (const auto& entry : entries) {
-        if (entry.active && entry.index == index) {
-            values.push_back(entry.value);
+
+    // Stream through the file to find matching entries without loading entire bucket
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        // File doesn't exist yet, return empty vector
+        return values;
+    }
+
+    while (file.peek() != EOF) {
+        uint8_t idx_length;
+        if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+            break;
+        }
+
+        // Read index string
+        std::string entry_index(idx_length, '\0');
+        if (!file.read(&entry_index[0], idx_length)) {
+            break;
+        }
+
+        // Read value
+        int32_t entry_value;
+        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
+            break;
+        }
+
+        // Read flags
+        uint8_t flags;
+        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
+            break;
+        }
+
+        bool active = (flags == 0x01);
+
+        // Collect matching values
+        if (active && entry_index == index) {
+            values.push_back(entry_value);
         }
     }
+
+    file.close();
 
     // Sort values in ascending order
     std::sort(values.begin(), values.end());
@@ -150,22 +213,72 @@ void BucketManager::save_bucket(int bucket_id, const std::vector<Entry>& entries
 
 void BucketManager::delete_entry(const std::string& index, int value) {
     int bucket_id = hash_bucket(index);
+    std::string filename = get_bucket_filename(bucket_id);
+    std::string temp_filename = filename + ".tmp";
 
-    // Load all entries from the bucket
-    std::vector<Entry> entries = load_bucket(bucket_id);
-
-    // Find and remove the entry (if it exists)
-    bool found = false;
-    for (auto it = entries.begin(); it != entries.end(); ++it) {
-        if (it->active && it->index == index && it->value == value) {
-            entries.erase(it);
-            found = true;
-            break;
-        }
+    // Stream through the file without loading entire bucket into memory
+    std::ifstream input(filename, std::ios::binary);
+    if (!input) {
+        // File doesn't exist, nothing to delete
+        return;
     }
 
-    // If we found and removed an entry, rewrite the bucket
+    std::ofstream output(temp_filename, std::ios::binary);
+    if (!output) {
+        input.close();
+        return;
+    }
+
+    bool found = false;
+
+    // Stream through the file and copy all entries except the one to delete
+    while (input.peek() != EOF) {
+        // Read entry
+        uint8_t idx_length;
+        if (!input.read(reinterpret_cast<char*>(&idx_length), 1)) {
+            break;
+        }
+
+        std::string entry_index(idx_length, '\0');
+        if (!input.read(&entry_index[0], idx_length)) {
+            break;
+        }
+
+        int32_t entry_value;
+        if (!input.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
+            break;
+        }
+
+        uint8_t flags;
+        if (!input.read(reinterpret_cast<char*>(&flags), 1)) {
+            break;
+        }
+
+        bool active = (flags == 0x01);
+
+        // Check if this is the entry to delete
+        if (!found && active && entry_index == index && entry_value == value) {
+            // Skip this entry (don't write it to output)
+            found = true;
+            continue;
+        }
+
+        // Write this entry to the temp file
+        output.write(reinterpret_cast<const char*>(&idx_length), 1);
+        output.write(entry_index.c_str(), idx_length);
+        output.write(reinterpret_cast<const char*>(&entry_value), sizeof(int32_t));
+        output.write(reinterpret_cast<const char*>(&flags), 1);
+    }
+
+    input.close();
+    output.close();
+
+    // Replace the original file with the temp file if an entry was deleted
     if (found) {
-        save_bucket(bucket_id, entries);
+        std::remove(filename.c_str());
+        std::rename(temp_filename.c_str(), filename.c_str());
+    } else {
+        // No entry was deleted, remove the temp file
+        std::remove(temp_filename.c_str());
     }
 }
