@@ -4,10 +4,10 @@
 Implement a high-quality file-based key-value database for ACMOJ Problem 2545 that handles insert/delete/find operations with strict memory constraints (5-6 MiB).
 
 ## Current Status
-- **Phase**: Ready for OJ Submission
-- **Date**: 2026-02-25 (Final Verification Complete)
-- **Submission Budget**: 7 attempts available
-- **State**: All milestones complete, implementation verified and approved
+- **Phase**: OJ Failure Investigation & Fix
+- **Date**: 2026-02-25 (Cycle 24)
+- **Submission Budget**: 5 attempts remaining (2 used: 750119, 750120)
+- **State**: OJ submissions failed - hash portability issue identified
 
 ## Architecture Decision
 
@@ -65,22 +65,42 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 - Ready for OJ submission
 
 ### M4: Final Testing and Submission Prep
-**Status**: ✅ COMPLETE
+**Status**: ✅ COMPLETE → ❌ OJ FAILED
 **Actual Cycles**: 0 (covered in M3 verification)
 **Description**: Final validation before submission
 **Completed Verification**:
 - ✅ 100K operations pass all constraints (memory + time)
 - ✅ Sample test produces exact expected output
 - ✅ Binary format verified at byte level
-- ✅ Persistence across program runs verified
+- ✅ Persistence across program runs verified (locally)
 - ✅ Edge cases tested (INT_MAX, 64-byte keys, duplicates, deletions)
 - ✅ No memory leaks (RAII compliant, no manual allocation)
 - ✅ Compilation verified (CMakeLists.txt produces `code` executable)
 - ✅ .gitignore configured correctly for OJ submission
-**Final State**:
-- All source files committed to git
-- Clean build with no warnings
-- Ready for external OJ evaluation
+**OJ Submission Results**:
+- Submission 750119: FAILED (Score: N/A)
+- Submission 750120: FAILED (Score: N/A)
+**Root Cause**:
+- std::hash<std::string> is non-portable across platforms/compilers
+- OJ platform produces different hash values than local environment
+- Persistence tests fail (data written to different buckets than expected)
+
+### M5: Fix Hash Portability Issue
+**Status**: 🔄 IN PROGRESS
+**Estimated Cycles**: 2
+**Description**: Replace non-portable std::hash with deterministic hash function
+**Requirements**:
+1. Implement portable hash function (FNV-1a or polynomial rolling hash)
+2. Replace std::hash usage in bucket_manager.cpp:13
+3. Verify hash distribution quality (test with diverse keys)
+4. Verify persistence still works correctly
+5. Run all existing tests (sample, 100K stress, edge cases)
+6. Ensure memory and time constraints still met
+**Success Criteria**:
+- ✅ Hash function produces identical results across platforms
+- ✅ All local tests pass (sample, stress, edge cases)
+- ✅ Memory ≤ 6 MiB, Time ≤ 16s on 100K operations
+- ✅ Ready for re-submission to OJ
 
 ## Key Constraints
 - Memory limit: 5-6 MiB per test case
@@ -129,3 +149,18 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
   - 7 submission attempts available for iteration if needed
   - Further optimization has diminishing returns and risks introducing bugs
 - **Final Verdict**: Code ready for external OJ evaluation
+
+### Cycle 6 (OJ Submission & Failure Analysis - External/Athena)
+- **OJ Submissions**: 2 attempts failed (750119, 750120)
+- **Investigation**: Athena commissioned blind investigations by Lucas, Sophia, Maya
+  - Sophia (Issue #20): 🚨 CRITICAL - std::hash<std::string> non-portable across platforms
+  - Maya (Issue #21): ⚠️ MEDIUM - File operation error handling in delete
+  - Lucas (Issue #22): ✅ Build system requirements verified
+- **Root Cause**: std::hash produces different values on OJ platform vs local
+  - Impact: Persistence tests fail (data in wrong buckets)
+  - Evidence: 2 failed submissions + Sophia's research on hash portability
+- **Key Lesson**: Platform-specific code (std::hash) breaks cross-platform testing
+  - Local testing passes != OJ passes
+  - Must use portable, deterministic algorithms for competitive programming
+  - Standard library implementations can vary across platforms
+- **Next Action**: Replace std::hash with portable hash (M5)
