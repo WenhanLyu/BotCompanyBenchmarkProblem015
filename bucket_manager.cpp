@@ -54,13 +54,13 @@ std::vector<Entry> BucketManager::load_bucket(int bucket_id) {
         return entries;
     }
 
-    // Read all entries from the bucket file
-    while (file.peek() != EOF) {
-        uint8_t idx_length;
-        if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-            break;
-        }
+    // Configure larger buffer for better I/O performance
+    char buffer[65536];
+    file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
 
+    // Read all entries from the bucket file
+    uint8_t idx_length;
+    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
         // Read index string
         std::string index(idx_length, '\0');
         if (!file.read(&index[0], idx_length)) {
@@ -94,12 +94,12 @@ void BucketManager::insert_entry(const std::string& index, int value) {
     // Stream through the file to check for duplicates without loading entire bucket
     std::ifstream file(filename, std::ios::binary);
     if (file) {
-        while (file.peek() != EOF) {
-            uint8_t idx_length;
-            if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-                break;
-            }
+        // Configure larger buffer for better I/O performance
+        char buffer[65536];
+        file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
 
+        uint8_t idx_length;
+        while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
             // Read index string
             std::string entry_index(idx_length, '\0');
             if (!file.read(&entry_index[0], idx_length)) {
@@ -147,12 +147,12 @@ std::vector<int> BucketManager::find_values(const std::string& index) {
         return values;
     }
 
-    while (file.peek() != EOF) {
-        uint8_t idx_length;
-        if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-            break;
-        }
+    // Configure larger buffer for better I/O performance
+    char buffer[65536];
+    file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
 
+    uint8_t idx_length;
+    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
         // Read index string
         std::string entry_index(idx_length, '\0');
         if (!file.read(&entry_index[0], idx_length)) {
@@ -229,16 +229,17 @@ void BucketManager::delete_entry(const std::string& index, int value) {
         return;
     }
 
+    // Configure larger buffers for better I/O performance
+    char input_buffer[65536];
+    char output_buffer[65536];
+    input.rdbuf()->pubsetbuf(input_buffer, sizeof(input_buffer));
+    output.rdbuf()->pubsetbuf(output_buffer, sizeof(output_buffer));
+
     bool found = false;
 
     // Stream through the file and copy all entries except the one to delete
-    while (input.peek() != EOF) {
-        // Read entry
-        uint8_t idx_length;
-        if (!input.read(reinterpret_cast<char*>(&idx_length), 1)) {
-            break;
-        }
-
+    uint8_t idx_length;
+    while (input.read(reinterpret_cast<char*>(&idx_length), 1)) {
         std::string entry_index(idx_length, '\0');
         if (!input.read(&entry_index[0], idx_length)) {
             break;
