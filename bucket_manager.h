@@ -21,7 +21,8 @@ public:
     BucketManager();
 
     // Insert an entry into the appropriate bucket
-    // Complexity: O(1) - single append operation
+    // Prevents duplicate (index, value) pairs per spec
+    // Complexity: O(bucket_size) - needs to check for duplicates
     void insert_entry(const std::string& index, int value);
 
     // Find all values for a given index, returned in sorted order

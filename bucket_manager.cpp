@@ -89,6 +89,19 @@ std::vector<Entry> BucketManager::load_bucket(int bucket_id) {
 
 void BucketManager::insert_entry(const std::string& index, int value) {
     int bucket_id = hash_bucket(index);
+
+    // Load existing entries to check for duplicates
+    std::vector<Entry> entries = load_bucket(bucket_id);
+
+    // Check if (index, value) pair already exists
+    for (const auto& entry : entries) {
+        if (entry.active && entry.index == index && entry.value == value) {
+            // Duplicate found, do not insert
+            return;
+        }
+    }
+
+    // No duplicate found, safe to append
     Entry entry(index, value, true);
     append_to_bucket(bucket_id, entry);
 }
