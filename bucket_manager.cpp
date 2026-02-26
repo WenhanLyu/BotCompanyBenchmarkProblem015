@@ -11,15 +11,12 @@ BucketManager::BucketManager() {
 }
 
 int BucketManager::hash_bucket(const std::string& index) const {
-    // FNV-1a hash - deterministic and portable across platforms
-    // FNV offset basis (64-bit)
-    uint64_t hash = 14695981039346656037ULL;
-    // FNV prime (64-bit)
-    const uint64_t fnv_prime = 1099511628211ULL;
+    // Polynomial rolling hash with prime 31 - deterministic and fast
+    // Simple multiplication version for optimal performance
+    uint32_t hash = 0;
 
     for (char c : index) {
-        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
-        hash *= fnv_prime;
+        hash = hash * 31u + static_cast<uint32_t>(static_cast<unsigned char>(c));
     }
 
     return static_cast<int>(hash % NUM_BUCKETS);
