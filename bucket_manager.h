@@ -4,28 +4,17 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <list>
-#include <bitset>
+#include <array>
+#include <cstdint>
 
-// Hash function for std::pair<std::string, int> used in bucket cache
-struct PairHash {
-    std::size_t operator()(const std::pair<std::string, int>& p) const {
-        // Combine hashes using FNV-1a-style mixing
-        std::size_t h1 = std::hash<std::string>{}(p.first);
-        std::size_t h2 = std::hash<int>{}(p.second);
-        return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
-    }
-};
+// Compact entry structure (16 bytes) for in-memory cache
+struct CompactEntry {
+    uint32_t key_hash;     // hash(index) for fast lookup
+    int32_t value;         // the value
+    int64_t file_offset;   // offset in file for full string verification
 
-// Entry structure representing a key-value pair
-struct Entry {
-    std::string index;
-    int value;
-    bool active;  // false if deleted (tombstone)
-
-    Entry(const std::string& idx, int val, bool act = true)
-        : index(idx), value(val), active(act) {}
+    CompactEntry(uint32_t hash, int32_t val, int64_t offset)
+        : key_hash(hash), value(val), file_offset(offset) {}
 };
 
 // BucketManager handles file-based storage with hash bucketing
@@ -36,71 +25,46 @@ public:
 
     // Insert an entry into the appropriate bucket
     // Prevents duplicate (index, value) pairs per spec
-    // Uses streaming file reads to minimize memory usage
-    // Complexity: O(bucket_size) - streams through file to check for duplicates
+    // Uses unbounded cache with lazy-loading
+    // Complexity: O(1) after bucket is loaded
     void insert_entry(const std::string& index, int value);
 
     // Find all values for a given index, returned in sorted order
     // Returns empty vector if no matching entries found
-    // Uses streaming file reads to minimize memory usage
-    // Complexity: O(bucket_size + k log k) where k = number of matches
+    // Uses unbounded cache with lazy-loading
+    // Complexity: O(1) lookup + O(k log k) sort where k = number of matches
     std::vector<int> find_values(const std::string& index);
 
     // Delete an entry with the given index and value
     // If the entry doesn't exist, operation is silently ignored
-    // Uses streaming file reads with temporary file for rewrite
-    // Complexity: O(bucket_size) - streams through file to rewrite without deleted entry
+    // Uses in-place tombstone marking
+    // Complexity: O(1) cache lookup + O(1) file write
     void delete_entry(const std::string& index, int value);
 
 private:
-    static const int NUM_BUCKETS = 1;  // Single file approach
-    static const size_t MAX_INDEX_ENTRIES = 15000;  // Bounded cache limit
-    static const size_t BLOOM_FILTER_SIZE = 800000;  // ~100 KB for 1% FP rate
+    static const int NUM_BUCKETS = 10;  // Multi-bucket architecture
 
-    // In-memory index for O(1) duplicate checking with LRU eviction
-    // Maps (index, value) -> file offset for bounded caching
-    std::unordered_map<std::pair<std::string, int>, int64_t, PairHash> index_;
+    // Per-bucket unbounded cache: maps key_hash -> vector of CompactEntry
+    // Lazy-loaded on first access to each bucket
+    std::array<std::unordered_map<uint32_t, std::vector<CompactEntry>>, NUM_BUCKETS> bucket_cache_;
 
-    // LRU tracking structures
-    std::list<std::pair<std::string, int>> lru_list_;  // Most recent at front
-    std::unordered_map<std::pair<std::string, int>,
-                       std::list<std::pair<std::string, int>>::iterator,
-                       PairHash> lru_pos_;
+    // Track which buckets have been loaded
+    std::array<bool, NUM_BUCKETS> bucket_loaded_;
 
-    // Bloom filter for probabilistic duplicate detection
-    // Never has false negatives: if says "not present", guaranteed absent
-    // ~1% false positive rate with 3 hash functions
-    std::bitset<BLOOM_FILTER_SIZE> bloom_filter_;
+    // Compute hash of a string for bucketing and cache lookup
+    uint32_t compute_hash(const std::string& index) const;
 
-    // Get the data file name (always "data.bin")
-    std::string get_data_filename() const;
+    // Get bucket number for an index
+    int get_bucket_number(const std::string& index) const;
 
-    // Update LRU list when an entry is accessed
-    void update_lru(const std::pair<std::string, int>& key);
+    // Get the data file name for a bucket
+    std::string get_bucket_filename(int bucket_num) const;
 
-    // Evict least recently used entry if cache is full
-    void evict_lru_if_needed();
+    // Load a bucket file into cache (lazy-load on first access)
+    void load_bucket(int bucket_num);
 
-    // Check if entry exists in file (for cache misses)
-    bool check_file_for_duplicate(const std::string& index, int value);
-
-    // Bloom filter operations
-    // Compute hash functions for bloom filter (k=3 for optimal FP rate)
-    size_t bloom_hash1(const std::string& index, int value) const;
-    size_t bloom_hash2(const std::string& index, int value) const;
-    size_t bloom_hash3(const std::string& index, int value) const;
-
-    // Add entry to bloom filter
-    void bloom_add(const std::string& index, int value);
-
-    // Check if entry might exist (true = maybe, false = definitely not)
-    bool bloom_contains(const std::string& index, int value) const;
-
-    // Load all entries from the data file into memory (for delete operations)
-    std::vector<Entry> load_all_entries();
-
-    // Save entries back to the data file (overwrites existing file)
-    void save_all_entries(const std::vector<Entry>& entries);
+    // Verify full string at file offset (for hash collision handling)
+    bool verify_entry_at_offset(int bucket_num, int64_t offset, const std::string& index) const;
 };
 
 #endif // BUCKET_MANAGER_H

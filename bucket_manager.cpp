@@ -1,241 +1,136 @@
 #include "bucket_manager.h"
 #include <algorithm>
 #include <fstream>
-#include <functional>
 #include <cstring>
-#include <cstdint>
 
 BucketManager::BucketManager() {
-    // Data file is created on-demand when first written
-    // Index and LRU structures are initially empty
-    // Bloom filter is initially empty
-
-    // If data file exists, populate bloom filter for existing entries
-    std::string filename = get_data_filename();
-    std::ifstream file(filename, std::ios::binary);
-    if (file) {
-        uint8_t idx_length;
-        while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-            std::string index(idx_length, '\0');
-            if (!file.read(&index[0], idx_length)) {
-                break;
-            }
-
-            int32_t value;
-            if (!file.read(reinterpret_cast<char*>(&value), sizeof(int32_t))) {
-                break;
-            }
-
-            uint8_t flags;
-            if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
-                break;
-            }
-
-            bool active = (flags == 0x01);
-            if (active) {
-                // Add to bloom filter
-                bloom_add(index, value);
-            }
-        }
-        file.close();
-    }
+    // Initialize all buckets as not loaded
+    bucket_loaded_.fill(false);
 }
 
-std::string BucketManager::get_data_filename() const {
-    return "data.bin";
-}
-
-void BucketManager::update_lru(const std::pair<std::string, int>& key) {
-    // Remove from current position if exists
-    auto it = lru_pos_.find(key);
-    if (it != lru_pos_.end()) {
-        lru_list_.erase(it->second);
-    }
-
-    // Add to front (most recent)
-    lru_list_.push_front(key);
-    lru_pos_[key] = lru_list_.begin();
-}
-
-void BucketManager::evict_lru_if_needed() {
-    while (index_.size() > MAX_INDEX_ENTRIES && !lru_list_.empty()) {
-        // Evict least-recently-used entry (back of list)
-        auto victim_key = lru_list_.back();
-        lru_list_.pop_back();
-        lru_pos_.erase(victim_key);
-        index_.erase(victim_key);
-    }
-}
-
-// Bloom filter hash function 1: FNV-1a variant
-size_t BucketManager::bloom_hash1(const std::string& index, int value) const {
-    size_t hash = 2166136261u;  // FNV offset basis
-
-    // Hash the string
-    for (unsigned char c : index) {
-        hash ^= c;
-        hash *= 16777619u;  // FNV prime
-    }
-
-    // Mix in the value
-    hash ^= static_cast<uint32_t>(value);
-    hash *= 16777619u;
-
-    return hash % BLOOM_FILTER_SIZE;
-}
-
-// Bloom filter hash function 2: Polynomial rolling hash with prime 37
-size_t BucketManager::bloom_hash2(const std::string& index, int value) const {
+uint32_t BucketManager::compute_hash(const std::string& index) const {
+    // Polynomial rolling hash with prime 31 (portable and deterministic)
     uint32_t hash = 0;
-    uint32_t prime = 37;
-
     for (unsigned char c : index) {
-        hash = hash * prime + c;
+        hash = hash * 31 + c;
+    }
+    return hash;
+}
+
+int BucketManager::get_bucket_number(const std::string& index) const {
+    return compute_hash(index) % NUM_BUCKETS;
+}
+
+std::string BucketManager::get_bucket_filename(int bucket_num) const {
+    return "data_" + std::to_string(bucket_num) + ".bin";
+}
+
+void BucketManager::load_bucket(int bucket_num) {
+    if (bucket_loaded_[bucket_num]) {
+        return;  // Already loaded
     }
 
-    // Mix in the value
-    hash = hash * prime + static_cast<uint32_t>(value);
-
-    return hash % BLOOM_FILTER_SIZE;
-}
-
-// Bloom filter hash function 3: Combination hash
-size_t BucketManager::bloom_hash3(const std::string& index, int value) const {
-    uint32_t hash = 5381;  // djb2 initial value
-
-    for (unsigned char c : index) {
-        hash = ((hash << 5) + hash) + c;  // hash * 33 + c
-    }
-
-    // Mix in the value with XOR and rotation
-    uint32_t val_hash = static_cast<uint32_t>(value);
-    hash ^= (val_hash + 0x9e3779b9 + (hash << 6) + (hash >> 2));
-
-    return hash % BLOOM_FILTER_SIZE;
-}
-
-// Add entry to bloom filter
-void BucketManager::bloom_add(const std::string& index, int value) {
-    bloom_filter_.set(bloom_hash1(index, value));
-    bloom_filter_.set(bloom_hash2(index, value));
-    bloom_filter_.set(bloom_hash3(index, value));
-}
-
-// Check if entry might exist in bloom filter
-bool BucketManager::bloom_contains(const std::string& index, int value) const {
-    return bloom_filter_.test(bloom_hash1(index, value)) &&
-           bloom_filter_.test(bloom_hash2(index, value)) &&
-           bloom_filter_.test(bloom_hash3(index, value));
-}
-
-bool BucketManager::check_file_for_duplicate(const std::string& index, int value) {
-    std::string filename = get_data_filename();
+    std::string filename = get_bucket_filename(bucket_num);
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
-        // File doesn't exist yet, no duplicates
-        return false;
+        // File doesn't exist yet, mark as loaded (empty bucket)
+        bucket_loaded_[bucket_num] = true;
+        return;
     }
 
     // Configure larger buffer for better I/O performance
     char buffer[65536];
     file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
 
-    // Scan file for duplicate
+    int64_t offset = 0;
     uint8_t idx_length;
+
     while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-        std::string entry_index(idx_length, '\0');
-        if (!file.read(&entry_index[0], idx_length)) {
-            break;
-        }
+        int64_t entry_start_offset = offset;
 
-        int32_t entry_value;
-        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
-            break;
-        }
-
-        uint8_t flags;
-        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
-            break;
-        }
-
-        bool active = (flags == 0x01);
-
-        // Check for duplicate
-        if (active && entry_index == index && entry_value == value) {
-            file.close();
-            return true;
-        }
-    }
-
-    file.close();
-    return false;
-}
-
-std::vector<Entry> BucketManager::load_all_entries() {
-    std::vector<Entry> entries;
-    std::string filename = get_data_filename();
-
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        // File doesn't exist yet, return empty vector
-        return entries;
-    }
-
-    // Configure larger buffer for better I/O performance
-    char buffer[65536];
-    file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
-
-    // Read all entries from the file
-    uint8_t idx_length;
-    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+        // Read index string
         std::string index(idx_length, '\0');
         if (!file.read(&index[0], idx_length)) {
             break;
         }
 
+        // Read value
         int32_t value;
         if (!file.read(reinterpret_cast<char*>(&value), sizeof(int32_t))) {
             break;
         }
 
+        // Read flags
         uint8_t flags;
         if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
             break;
         }
 
         bool active = (flags == 0x01);
-        entries.emplace_back(index, value, active);
+
+        // Add to cache if active
+        if (active) {
+            uint32_t key_hash = compute_hash(index);
+            bucket_cache_[bucket_num][key_hash].emplace_back(key_hash, value, entry_start_offset);
+        }
+
+        // Update offset for next entry
+        offset += 1 + idx_length + sizeof(int32_t) + 1;
     }
 
     file.close();
-    return entries;
+    bucket_loaded_[bucket_num] = true;
+}
+
+bool BucketManager::verify_entry_at_offset(int bucket_num, int64_t offset, const std::string& index) const {
+    std::string filename = get_bucket_filename(bucket_num);
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+
+    file.seekg(offset);
+
+    uint8_t idx_length;
+    if (!file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+        file.close();
+        return false;
+    }
+
+    std::string stored_index(idx_length, '\0');
+    if (!file.read(&stored_index[0], idx_length)) {
+        file.close();
+        return false;
+    }
+
+    file.close();
+    return stored_index == index;
 }
 
 void BucketManager::insert_entry(const std::string& index, int value) {
-    std::pair<std::string, int> key = {index, value};
+    int bucket_num = get_bucket_number(index);
 
-    // Check in-memory index first (O(1))
-    if (index_.find(key) != index_.end()) {
-        // Entry is in index, update LRU and return (duplicate)
-        update_lru(key);
-        return;
-    }
+    // Load bucket if not already loaded
+    load_bucket(bucket_num);
 
-    // Check bloom filter (O(1))
-    if (!bloom_contains(index, value)) {
-        // Bloom filter says "definitely not present" - safe to insert
-        // This is the fast path for 99% of inserts after cache fills
-    } else {
-        // Bloom filter says "might be present" (~1% false positive rate)
-        // Need to check file to confirm
-        if (check_file_for_duplicate(index, value)) {
-            // Duplicate found on disk
-            return;
+    uint32_t key_hash = compute_hash(index);
+
+    // Check if entry already exists in cache
+    auto& cache_map = bucket_cache_[bucket_num];
+    auto it = cache_map.find(key_hash);
+
+    if (it != cache_map.end()) {
+        // Hash collision possible - verify each entry
+        for (const auto& entry : it->second) {
+            if (entry.value == value && verify_entry_at_offset(bucket_num, entry.file_offset, index)) {
+                // Duplicate found
+                return;
+            }
         }
     }
 
     // Get current file size to record offset
-    std::string filename = get_data_filename();
+    std::string filename = get_bucket_filename(bucket_num);
     std::ifstream check_file(filename, std::ios::binary | std::ios::ate);
     int64_t offset = 0;
     if (check_file.is_open()) {
@@ -250,7 +145,7 @@ void BucketManager::insert_entry(const std::string& index, int value) {
     }
 
     uint8_t idx_length = static_cast<uint8_t>(index.length());
-    uint8_t flags = 0x01;
+    uint8_t flags = 0x01;  // Active entry
     int32_t val = value;
 
     file.write(reinterpret_cast<const char*>(&idx_length), 1);
@@ -260,63 +155,31 @@ void BucketManager::insert_entry(const std::string& index, int value) {
 
     file.close();
 
-    // Add to bloom filter
-    bloom_add(index, value);
-
-    // Evict LRU entry if needed before adding new entry
-    if (index_.size() >= MAX_INDEX_ENTRIES) {
-        evict_lru_if_needed();
-    }
-
-    // Add to index and update LRU
-    index_[key] = offset;
-    update_lru(key);
+    // Add to cache
+    cache_map[key_hash].emplace_back(key_hash, value, offset);
 }
 
 std::vector<int> BucketManager::find_values(const std::string& index) {
-    std::string filename = get_data_filename();
+    int bucket_num = get_bucket_number(index);
+
+    // Load bucket if not already loaded
+    load_bucket(bucket_num);
+
+    uint32_t key_hash = compute_hash(index);
     std::vector<int> values;
 
-    // Stream through the file to find matching entries without loading entire file
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        // File doesn't exist yet, return empty vector
-        return values;
-    }
+    // Look up in cache
+    auto& cache_map = bucket_cache_[bucket_num];
+    auto it = cache_map.find(key_hash);
 
-    // Configure larger buffer for better I/O performance
-    char buffer[65536];
-    file.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
-
-    uint8_t idx_length;
-    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-        // Read index string
-        std::string entry_index(idx_length, '\0');
-        if (!file.read(&entry_index[0], idx_length)) {
-            break;
-        }
-
-        // Read value
-        int32_t entry_value;
-        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
-            break;
-        }
-
-        // Read flags
-        uint8_t flags;
-        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
-            break;
-        }
-
-        bool active = (flags == 0x01);
-
-        // Collect matching values
-        if (active && entry_index == index) {
-            values.push_back(entry_value);
+    if (it != cache_map.end()) {
+        // Hash collision possible - verify each entry
+        for (const auto& entry : it->second) {
+            if (verify_entry_at_offset(bucket_num, entry.file_offset, index)) {
+                values.push_back(entry.value);
+            }
         }
     }
-
-    file.close();
 
     // Sort values in ascending order
     std::sort(values.begin(), values.end());
@@ -324,92 +187,64 @@ std::vector<int> BucketManager::find_values(const std::string& index) {
     return values;
 }
 
-void BucketManager::save_all_entries(const std::vector<Entry>& entries) {
-    std::string filename = get_data_filename();
+void BucketManager::delete_entry(const std::string& index, int value) {
+    int bucket_num = get_bucket_number(index);
 
-    // Open in binary write mode (truncate existing file)
-    std::ofstream file(filename, std::ios::binary | std::ios::trunc);
-    if (!file) {
+    // Load bucket if not already loaded
+    load_bucket(bucket_num);
+
+    uint32_t key_hash = compute_hash(index);
+
+    // Find entry in cache
+    auto& cache_map = bucket_cache_[bucket_num];
+    auto it = cache_map.find(key_hash);
+
+    if (it == cache_map.end()) {
+        // Not in cache, doesn't exist
         return;
     }
 
-    // Write all entries
-    for (const auto& entry : entries) {
-        uint8_t idx_length = static_cast<uint8_t>(entry.index.length());
-        uint8_t flags = entry.active ? 0x01 : 0x00;
-        int32_t value = entry.value;
+    // Find the specific entry with matching value and index
+    auto& entries = it->second;
+    int64_t target_offset = -1;
+    size_t entry_idx = 0;
 
-        file.write(reinterpret_cast<const char*>(&idx_length), 1);
-        file.write(entry.index.c_str(), idx_length);
-        file.write(reinterpret_cast<const char*>(&value), sizeof(int32_t));
-        file.write(reinterpret_cast<const char*>(&flags), 1);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].value == value && verify_entry_at_offset(bucket_num, entries[i].file_offset, index)) {
+            target_offset = entries[i].file_offset;
+            entry_idx = i;
+            break;
+        }
     }
 
-    file.close();
-}
+    if (target_offset == -1) {
+        // Entry not found
+        return;
+    }
 
-void BucketManager::delete_entry(const std::string& index, int value) {
-    std::string filename = get_data_filename();
-
-    // Open file for reading and writing (in-place modification)
+    // Mark as deleted in file (in-place tombstone)
+    std::string filename = get_bucket_filename(bucket_num);
     std::fstream file(filename, std::ios::in | std::ios::out | std::ios::binary);
     if (!file) {
-        // File doesn't exist, nothing to delete
         return;
     }
 
-    // Scan file to find the entry to delete
-    bool found = false;
-    uint8_t idx_length;
+    // Calculate position of flags byte
+    uint8_t idx_length = static_cast<uint8_t>(index.length());
+    int64_t flags_offset = target_offset + 1 + idx_length + sizeof(int32_t);
 
-    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
-        std::string entry_index(idx_length, '\0');
-        if (!file.read(&entry_index[0], idx_length)) {
-            break;
-        }
-
-        int32_t entry_value;
-        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
-            break;
-        }
-
-        // Get position before reading flags (this is where we'll write if we need to delete)
-        std::streampos flags_pos = file.tellg();
-
-        uint8_t flags;
-        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
-            break;
-        }
-
-        bool active = (flags == 0x01);
-
-        // Check if this is the entry to delete
-        if (!found && active && entry_index == index && entry_value == value) {
-            // Mark as deleted by overwriting flags byte with tombstone
-            file.seekp(flags_pos);  // Seek to flags position for writing
-            uint8_t tombstone = 0x00;
-            file.write(reinterpret_cast<const char*>(&tombstone), 1);
-            file.flush();  // Ensure write is committed
-            found = true;
-            break;  // Exit early once we've marked it as deleted
-        }
-    }
-
+    // Seek to flags position and write tombstone
+    file.seekp(flags_offset);
+    uint8_t tombstone = 0x00;
+    file.write(reinterpret_cast<const char*>(&tombstone), 1);
+    file.flush();
     file.close();
 
-    // Update index and LRU structures if entry was found
-    if (found) {
-        std::pair<std::string, int> key = {index, value};
-        auto idx_it = index_.find(key);
-        if (idx_it != index_.end()) {
-            index_.erase(idx_it);
+    // Remove from cache
+    entries.erase(entries.begin() + entry_idx);
 
-            // Also remove from LRU tracking
-            auto lru_it = lru_pos_.find(key);
-            if (lru_it != lru_pos_.end()) {
-                lru_list_.erase(lru_it->second);
-                lru_pos_.erase(lru_it);
-            }
-        }
+    // If no more entries for this hash, remove the hash key
+    if (entries.empty()) {
+        cache_map.erase(it);
     }
 }
