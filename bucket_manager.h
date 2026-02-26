@@ -3,6 +3,18 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
+
+// Hash function for std::pair<std::string, int> used in bucket cache
+struct PairHash {
+    std::size_t operator()(const std::pair<std::string, int>& p) const {
+        // Combine hashes using FNV-1a-style mixing
+        std::size_t h1 = std::hash<std::string>{}(p.first);
+        std::size_t h2 = std::hash<int>{}(p.second);
+        return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    }
+};
 
 // Entry structure representing a key-value pair
 struct Entry {
@@ -41,11 +53,19 @@ public:
 private:
     static const int NUM_BUCKETS = 20;
 
+    // In-memory hash index for O(1) duplicate checking
+    // Maps bucket_id -> set of (index, value) pairs
+    // Lazy-loaded on first access to each bucket
+    std::unordered_map<int, std::unordered_set<std::pair<std::string, int>, PairHash>> bucket_cache_;
+
     // Compute hash bucket for an index
     int hash_bucket(const std::string& index) const;
 
     // Get bucket file name for a given bucket ID
     std::string get_bucket_filename(int bucket_id) const;
+
+    // Load bucket cache from file (called lazily on first access)
+    void load_bucket_cache(int bucket_id);
 
     // Load all entries from a bucket file into memory
     std::vector<Entry> load_bucket(int bucket_id);
