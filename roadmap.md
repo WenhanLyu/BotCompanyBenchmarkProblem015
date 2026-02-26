@@ -178,8 +178,8 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 - 20-file architecture is required (not 1 file, not 5000 files)
 
 ### M5.1.4: Add Bloom Filter to Prevent O(n²) File Scans
-**Status**: 🎯 READY TO START
-**Cycles Allocated**: 3
+**Status**: ❌ FAILED - Single-file architecture fundamentally too slow
+**Cycles Used**: 3/3
 **Description**: Add Bloom filter to bounded cache implementation to eliminate O(n²) degradation after cache fills
 **Why Current Implementation Fails** (Commit 6d93bcb Analysis):
 - Single file with bounded cache (15K entries max) + LRU eviction
@@ -270,6 +270,98 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 **Alternative If This Fails**:
 - Switch to 20-bucket architecture (commit c5147e3) with adaptive cache eviction
 - Request clarification on 20-file limit interpretation
+
+**ACTUAL OUTCOME (Cycle 27-29)**:
+- Elena implemented bloom filter (commit 8ed1074) ✅
+- Maya fixed delete memory bloat (commit 37c1bee) ✅
+- Felix tested commit 37c1bee: **ALL TESTS FAILED** ❌
+  - Random: 78.51s (4.9x over 16s limit)
+  - Collision: 223.42s (14.0x over limit)
+  - Insert-heavy: 379.16s (23.7x over limit)
+  - Memory: 13-131 MiB (2-22x over 6 MiB limit)
+- **Root Cause**: Single-file architecture is fundamentally too slow
+  - Bloom filter works but doesn't solve the file I/O bottleneck
+  - Every operation touches the same file → no parallelism
+  - Find operations still scan entire file (no index)
+- **Key Finding** (Maya's blind audit): Find operations have O(n) complexity, causing catastrophic performance
+
+### M5.2: Switch to Multi-Bucket Architecture
+**Status**: 🎯 READY TO START
+**Cycles Allocated**: 4
+**Description**: Replace single-file architecture with 10-bucket system using unbounded in-memory cache of compact entries
+
+**Why Single-File Failed**:
+The single-file approach (M5.1.3, M5.1.4) was fundamentally flawed:
+- All operations contend on one file → excessive I/O overhead
+- Find operations require full file scan → O(n) per find
+- Delete requires file rewrite → O(n) per delete
+- No way to parallelize or distribute load
+- Roadmap explicitly states: "20-file architecture is required (not 1 file, not 5000 files)"
+
+**Why Multi-Bucket Works**:
+- Distribute 100K entries across 10 buckets → 10K entries per bucket
+- Each operation only touches 1 bucket (1/10th of data)
+- Unbounded cache keeps all entries in memory → O(1) operations
+- Memory: Use compact entries (hash+value) instead of full strings
+
+**Architecture Specification**:
+
+1. **Bucket Configuration**:
+   ```cpp
+   NUM_BUCKETS = 10  // Files: 10/20 (50% margin)
+   ```
+
+2. **Compact Entry Structure**:
+   ```cpp
+   struct CompactEntry {
+       uint32_t key_hash;    // hash(index) for fast lookup
+       int32_t value;        // the value
+       int64_t file_offset;  // for full string verification
+   };
+   // Memory: 16 bytes per entry
+   ```
+
+3. **Per-Bucket Cache**:
+   ```cpp
+   // One map per bucket, maps key_hash -> list of (value, offset) pairs
+   std::array<std::unordered_map<uint32_t, std::vector<std::pair<int32_t, int64_t>>>, 10> bucket_cache_;
+   ```
+
+4. **Memory Calculation**:
+   - 100K entries × 16 bytes = 1,600,000 bytes = 1.53 MiB (base)
+   - Hash table overhead (~50%): +800 KB
+   - Vector overhead (~20%): +320 KB
+   - **Total: ~2.6 MiB** (57% margin, safe!)
+
+5. **Expected Performance**:
+   - Insert: O(1) hash lookup + O(log k) for k values per index
+   - Find: O(1) hash lookup + O(k log k) sort
+   - Delete: O(1) hash lookup + file rewrite of 1 bucket
+   - **Estimated time**: 8-12s for 100K operations (25-50% margin)
+
+**Implementation Requirements**:
+1. Remove all bloom filter code (~150 lines)
+2. Remove LRU eviction code (~80 lines)
+3. Change NUM_BUCKETS from 1 to 10
+4. Implement CompactEntry structure
+5. Load each bucket file into cache on first access (lazy-load)
+6. On cache hit, verify full string by reading file at offset
+7. Handle hash collisions (rare, ~0.00002% probability)
+
+**Success Criteria**:
+- ✅ Time: <16s for all three 100K tests (target: 8-12s)
+- ✅ Memory: <6 MiB (target: <4 MiB for safety)
+- ✅ Files: ≤20 (actual: 10 files)
+- ✅ Correctness: Sample test passes, no regressions
+
+**Risks**:
+- LOW: Compact entry approach is well-proven
+- Hash collision handling is straightforward
+- 57% memory margin provides safety buffer
+
+**Fallback If This Fails**:
+- Increase NUM_BUCKETS to 15-19 for even smaller buckets
+- Use full strings if compact entries have issues (will use ~4-5 MiB)
 
 ## Key Constraints
 - Memory limit: 5-6 MiB per test case
@@ -367,6 +459,24 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
   - Fresh blind evaluation catches issues familiar evaluators miss
   - "Tight margin" (9%) is NOT acceptable when multiple risks compound
   - Always test actual OJ build process, not just local optimized build
+
+### Cycle 27-29 (M5.1.4 Execution - Bloom Filter Catastrophe - Ares/Athena)
+- **Milestone**: M5.1.4 (Add Bloom Filter) - 3 cycles
+- **Outcome**: COMPLETE FAILURE - Performance worse than before
+- **What Happened**:
+  - Elena implemented bloom filter (8ed1074)
+  - Maya fixed delete memory bloat (37c1bee)
+  - Felix tested: ALL TESTS FAILED (78-379s vs 16s limit)
+- **Root Cause**: Wrong architectural direction
+  - Single-file architecture has fundamental I/O bottleneck
+  - Bloom filter doesn't solve the core problem (file contention)
+  - Find operations still require full file scan (no index)
+- **Key Lessons**:
+  1. **Architectural issues cannot be fixed with optimizations** - need fundamental redesign
+  2. **Roadmap already said the answer** - "20-file architecture is required (not 1 file)"
+  3. **Single-file approach (M5.1.3, M5.1.4) was wrong from the start**
+  4. **Test incrementally** - Felix found catastrophic issues only after 3 cycles of work
+- **Decision**: Abandon single-file approach, switch to multi-bucket architecture (M5.2)
 
 ### Cycle 27 (M5.1 Execution Failure - Ares/Athena)
 - **Milestone**: M5.1 (Fix OJ Submission Blockers) - 3 cycles, 3 fixes
