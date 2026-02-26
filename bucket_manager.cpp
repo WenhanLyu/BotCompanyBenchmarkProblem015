@@ -181,6 +181,9 @@ void BucketManager::insert_entry(const std::string& index, int value) {
 
     // Update cache with the new entry
     bucket_cache_[bucket_id].insert(key);
+
+    // Clear bucket cache to bound memory usage per operation
+    bucket_cache_.erase(bucket_id);
 }
 
 std::vector<int> BucketManager::find_values(const std::string& index) {
