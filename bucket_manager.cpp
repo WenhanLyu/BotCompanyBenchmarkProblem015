@@ -256,30 +256,25 @@ void BucketManager::save_bucket(int bucket_id, const std::vector<Entry>& entries
 void BucketManager::delete_entry(const std::string& index, int value) {
     int bucket_id = hash_bucket(index);
     std::string filename = get_bucket_filename(bucket_id);
-    std::string temp_filename = filename + ".tmp";
 
-    // Stream through the file without loading entire bucket into memory
+    // Read entire bucket into memory
     std::ifstream input(filename, std::ios::binary);
     if (!input) {
         // File doesn't exist, nothing to delete
         return;
     }
 
-    std::ofstream output(temp_filename, std::ios::binary);
-    if (!output) {
-        input.close();
-        return;
-    }
+    // Structure to hold an entry
+    struct Entry {
+        std::string index;
+        int32_t value;
+        uint8_t flags;
+    };
 
-    // Configure larger buffers for better I/O performance
-    char input_buffer[65536];
-    char output_buffer[65536];
-    input.rdbuf()->pubsetbuf(input_buffer, sizeof(input_buffer));
-    output.rdbuf()->pubsetbuf(output_buffer, sizeof(output_buffer));
-
+    std::vector<Entry> entries;
     bool found = false;
 
-    // Stream through the file and copy all entries except the one to delete
+    // Read all entries from the file
     uint8_t idx_length;
     while (input.read(reinterpret_cast<char*>(&idx_length), 1)) {
         std::string entry_index(idx_length, '\0');
@@ -301,27 +296,33 @@ void BucketManager::delete_entry(const std::string& index, int value) {
 
         // Check if this is the entry to delete
         if (!found && active && entry_index == index && entry_value == value) {
-            // Skip this entry (don't write it to output)
+            // Skip this entry (don't add it to the vector)
             found = true;
             continue;
         }
 
-        // Write this entry to the temp file
-        output.write(reinterpret_cast<const char*>(&idx_length), 1);
-        output.write(entry_index.c_str(), idx_length);
-        output.write(reinterpret_cast<const char*>(&entry_value), sizeof(int32_t));
-        output.write(reinterpret_cast<const char*>(&flags), 1);
+        // Add entry to vector
+        entries.push_back({entry_index, entry_value, flags});
     }
 
     input.close();
-    output.close();
 
-    // Replace the original file with the temp file if an entry was deleted
+    // If an entry was deleted, rewrite the original file in-place
     if (found) {
-        std::remove(filename.c_str());
-        std::rename(temp_filename.c_str(), filename.c_str());
-    } else {
-        // No entry was deleted, remove the temp file
-        std::remove(temp_filename.c_str());
+        std::ofstream output(filename, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return;
+        }
+
+        // Write all remaining entries back to the file
+        for (const auto& entry : entries) {
+            uint8_t idx_len = static_cast<uint8_t>(entry.index.length());
+            output.write(reinterpret_cast<const char*>(&idx_len), 1);
+            output.write(entry.index.c_str(), idx_len);
+            output.write(reinterpret_cast<const char*>(&entry.value), sizeof(int32_t));
+            output.write(reinterpret_cast<const char*>(&entry.flags), 1);
+        }
+
+        output.close();
     }
 }
