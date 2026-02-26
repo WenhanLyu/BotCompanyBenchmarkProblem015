@@ -114,9 +114,10 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 - Underestimated time margin risk
 
 ### M5.1: Fix OJ Submission Blockers
-**Status**: 🔄 IN PROGRESS
-**Cycles Budget**: 3
-**Description**: Fix three critical blockers preventing successful OJ submission
+**Status**: ❌ FAILED - Ares did zero work, all 3 fixes unimplemented
+**Cycles Used**: 3/3 (wasted)
+**Root Cause**: Milestone too broad with 3 distinct fixes ranging from trivial to complex
+**Decision**: Break into 3 focused sub-milestones (M5.1.1, M5.1.2, M5.1.3)
 **Required Fixes**:
 1. **CMakeLists.txt optimization** (CRITICAL, EASY)
    - Move `-O2` from CMAKE_CXX_FLAGS_RELEASE to base CMAKE_CXX_FLAGS
@@ -128,22 +129,38 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 3. **Insert performance optimization** (CRITICAL, ARCHITECTURAL)
    - Current: O(n^2) due to full bucket scan on every insert
    - Options:
-     a. Remove duplicate check entirely (verify if spec allows)
+     a. ~~Remove duplicate check entirely~~ (CANNOT - spec requires duplicate prevention)
      b. Optimize duplicate check (sorted bucket + binary search)
      c. Use in-memory bloom filter or hash set for current session
-   - Target: 100K operations must complete in <14s (leave 2s margin)
+   - Target: 100K operations must complete in <14s (leave 2s margin below 16s limit)
+
+### M5.1.1: Fix CMakeLists.txt Optimization Flag
+**Status**: 🔄 IN PROGRESS
+**Cycles Budget**: 1
+**Description**: Move -O2 from CMAKE_CXX_FLAGS_RELEASE to base CMAKE_CXX_FLAGS
+**Why This First**: Trivial 1-line fix, builds momentum, immediate 18% performance gain
+**Current Code** (CMakeLists.txt:10):
+```cmake
+set(CMAKE_CXX_FLAGS_RELEASE "-O2")
+```
+**Required Change** (CMakeLists.txt:9):
+```cmake
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -O2")
+```
+**Rationale**: OJ builds without CMAKE_BUILD_TYPE, so -O2 must be unconditional
+**Impact**:
+- Current: 18.6s without optimization (FAILS 16s limit)
+- Fixed: 15.2s with optimization (95% of limit)
 **Success Criteria**:
-- ✅ CMakeLists.txt produces optimized binary in standard OJ build process
-- ✅ File count never exceeds 20 during any operation
-- ✅ 100K random operations complete in <14s (with 2s margin below 16s limit)
-- ✅ 100K insert-heavy operations complete in <14s
-- ✅ All functional correctness tests still pass
-- ✅ Memory usage stays ≤6 MiB
+- ✅ -O2 moved to base CMAKE_CXX_FLAGS (line 9)
+- ✅ CMAKE_CXX_FLAGS_RELEASE remains empty or removed
+- ✅ Build test: `cmake . && make` produces optimized binary
+- ✅ Performance test: 100K random operations complete in <16s
+- ✅ Sample test still passes
 **Verification**:
-- Build with OJ-equivalent process: `cmake . && make` (no CMAKE_BUILD_TYPE)
-- Test with 100K random ops, 100K insert-heavy ops, edge cases
-- Verify file count with `lsof` during operations
-- Fresh blind evaluation after fixes
+- Clean build: `rm -rf build CMakeCache.txt Makefile && cmake . && make`
+- Verify optimization: `file code` should show stripped binary
+- Run stress test: Must complete in <16s
 
 ## Key Constraints
 - Memory limit: 5-6 MiB per test case
@@ -241,3 +258,25 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
   - Fresh blind evaluation catches issues familiar evaluators miss
   - "Tight margin" (9%) is NOT acceptable when multiple risks compound
   - Always test actual OJ build process, not just local optimized build
+
+### Cycle 27 (M5.1 Execution Failure - Ares/Athena)
+- **Milestone**: M5.1 (Fix OJ Submission Blockers) - 3 cycles, 3 fixes
+- **Outcome**: COMPLETE FAILURE - Ares did zero work
+- **Investigation**: Lucas's blind audit revealed:
+  - Ares workspace: Empty (created but no files, no notes)
+  - Git commits: None
+  - Code changes: None (all 3 fixes unimplemented)
+  - Timeline: 3 cycles consumed with zero output
+- **OJ Feedback** (Issue #30 from HUMAN):
+  - Testpoint 28: Time Limit Exceeded (Subtask 9: Synthesized test 2)
+  - Confirms performance issues are real on OJ platform
+- **Root Cause Analysis**:
+  - M5.1 was TOO BROAD with 3 distinct fixes (trivial → complex)
+  - Each fix requires different skills and testing approaches
+  - Monolithic milestone creates execution risk
+- **Decision**: Break M5.1 into 3 focused sub-milestones (M5.1.1, M5.1.2, M5.1.3)
+- **Key Lesson**:
+  - Even "small" milestones can be too broad if they mix concerns
+  - Break work into SINGLE-PURPOSE milestones
+  - Start with easiest fix to build momentum and reduce risk
+  - One clear objective per milestone > multiple objectives bundled together
