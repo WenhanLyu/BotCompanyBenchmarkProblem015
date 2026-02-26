@@ -135,8 +135,8 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
    - Target: 100K operations must complete in <14s (leave 2s margin below 16s limit)
 
 ### M5.1.1: Fix CMakeLists.txt Optimization Flag
-**Status**: 🔄 IN PROGRESS
-**Cycles Budget**: 1
+**Status**: ✅ COMPLETE
+**Cycles Used**: 1
 **Description**: Move -O2 from CMAKE_CXX_FLAGS_RELEASE to base CMAKE_CXX_FLAGS
 **Why This First**: Trivial 1-line fix, builds momentum, immediate 18% performance gain
 **Current Code** (CMakeLists.txt:10):
