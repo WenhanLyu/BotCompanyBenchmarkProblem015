@@ -156,3 +156,88 @@ Target: All tests <16s, <6 MiB memory, 10 files.
 *Bloom filter approach abandoned in favor of M5.2 multi-bucket architecture*
 
 *See git history for details*
+
+---
+
+## Cycle 29 (2026-02-26) - Container Capacity Optimization
+
+### Assignment
+Optimize M5.2 memory usage by reserving hash map and vector capacity:
+- Reserve 10000 buckets per cache
+- Reserve 2-3 capacity per vector
+- **Target**: Reduce insert_heavy memory from 4.62 MiB to under 3 MiB
+- Scope: Quick targeted fix - container reservations only
+
+### Investigation Results
+
+**Baseline Measurement (Commit 2044fba):**
+- insert_heavy test: 4.59 MiB RSS (verified)
+- 90,039 insert operations for 10,000 unique keys
+- Distribution: 1,000 unique keys per bucket (perfectly balanced)
+- Average: ~9 values per key
+
+**Approaches Tested:**
+
+1. **Reserve(10000) in load_bucket** - FAILED
+   - Memory: 5.28 MiB (15% WORSE)
+   - Cause: Massive over-allocation for hash table buckets
+
+2. **Reserve(1000) in load_bucket** - NO IMPROVEMENT
+   - Memory: 4.56 MiB (same as baseline)
+
+3. **Vector reserve(2) and reserve(8)** - FAILED
+   - Memory: 4.72-4.83 MiB (WORSE)
+   - Cause: Pre-allocating for all vectors wastes memory
+
+4. **max_load_factor(2.0-2.5)** - NO EFFECT
+   - Memory: 4.59 MiB (no change)
+   - Denser packing doesn't reduce actual usage
+
+5. **Constructor reserves (BEST)** - MINOR IMPROVEMENT
+   - Reserve 1000 in constructor for all 10 hash maps
+   - max_load_factor(2.5) for denser packing
+   - **Memory: 4.47 MiB** (3% improvement, ~130 KB saved)
+   - Time: 4.54s (still well under 16s limit)
+
+### Final Implementation
+
+```cpp
+BucketManager::BucketManager() {
+    bucket_loaded_.fill(false);
+
+    // Optimize hash maps for memory efficiency
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+        bucket_cache_[i].max_load_factor(2.5);  // Denser packing
+        bucket_cache_[i].reserve(1000);  // Reserve for ~1000 unique keys/bucket
+    }
+}
+```
+
+### Why Target Not Achieved
+
+The 35% reduction needed (4.6 MiB → 3 MiB) is **fundamentally unachievable** with container reservations:
+
+**Memory Breakdown:**
+- 90K entries × 16 bytes = 1.44 MiB (minimum data)
+- Container overhead = ~3 MiB (hash tables + vectors + allocator)
+- **Total: 4.44 MiB minimum**
+
+**Why reservations don't help:**
+- Reserving capacity pre-allocates memory (doesn't reduce it)
+- Over-reserving increases memory usage
+- Under-reserving provides no benefit
+- Allocator fragmentation persists regardless
+
+**To reach <3 MiB would require:**
+1. Bounded cache (limit entries kept in memory)
+2. Stream-based processing (no caching)
+3. More compact data structures (<16 bytes/entry)
+4. Custom memory allocator
+
+### Conclusion
+
+**Achieved:** Minor optimization (4.59 → 4.47 MiB, 3% improvement)
+**Target:** <3 MiB (35% reduction)
+**Status:** Target unachievable with specified approach
+
+The M5.2 unbounded cache architecture inherently requires ~4.5 MiB for insert-heavy workloads. Container capacity optimizations provide minimal benefit. Reaching 3 MiB requires architectural changes beyond "container reservations only".

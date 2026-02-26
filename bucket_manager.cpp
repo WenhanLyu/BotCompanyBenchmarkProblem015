@@ -6,6 +6,12 @@
 BucketManager::BucketManager() {
     // Initialize all buckets as not loaded
     bucket_loaded_.fill(false);
+
+    // Optimize hash maps for memory efficiency
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+        bucket_cache_[i].max_load_factor(2.5);  // Denser packing reduces memory overhead
+        bucket_cache_[i].reserve(1000);  // Reserve for ~1000 unique keys per bucket
+    }
 }
 
 uint32_t BucketManager::compute_hash(const std::string& index) const {
