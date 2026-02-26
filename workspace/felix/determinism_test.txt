@@ -1,0 +1,11 @@
+10
+insert test_key_1 100
+insert test_key_2 200
+insert test_key_3 300
+insert test_key_1 101
+insert test_key_2 201
+find test_key_1
+find test_key_2
+find test_key_3
+delete test_key_1 100
+find test_key_1

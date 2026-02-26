@@ -3,9 +3,11 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+build/
 
 # Build output
 code
+*.dSYM/
 
 # IDE and editor files
 .vscode/
@@ -21,3 +23,8 @@ code
 # Data files created during testing
 *.dat
 *.bin
+
+# Test artifacts (keep in tests/ directory)
+tests/binaries/
+tests/outputs/*.txt
+tests/inputs/*.txt

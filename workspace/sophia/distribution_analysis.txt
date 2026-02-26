@@ -1,0 +1,32 @@
+Bucket Distribution Analysis for stress_100k.txt
+================================================
+Total insert operations: 100000
+
+Bucket 0: 4972 inserts, final count: 4970
+Bucket 1: 4970 inserts, final count: 4967
+Bucket 2: 4976 inserts, final count: 4973
+Bucket 3: 4983 inserts, final count: 4979
+Bucket 4: 4987 inserts, final count: 4983
+Bucket 5: 5004 inserts, final count: 4998
+Bucket 6: 5008 inserts, final count: 5003
+Bucket 7: 5024 inserts, final count: 5019
+Bucket 8: 5020 inserts, final count: 5016
+Bucket 9: 5032 inserts, final count: 5029
+Bucket 10: 5028 inserts, final count: 5025
+Bucket 11: 5030 inserts, final count: 5028
+Bucket 12: 5024 inserts, final count: 5022
+Bucket 13: 5017 inserts, final count: 5016
+Bucket 14: 5013 inserts, final count: 5012
+Bucket 15: 4996 inserts, final count: 4996
+Bucket 16: 4992 inserts, final count: 4992
+Bucket 17: 4976 inserts, final count: 4976
+Bucket 18: 4980 inserts, final count: 4979
+Bucket 19: 4968 inserts, final count: 4967
+
+Statistics:
+Max bucket inserts: 5032
+Min bucket inserts: 4968
+Avg bucket inserts: 5000
+Imbalance ratio: 1.01288
+
+Total sequential comparisons (O(n^2)): 250054798
