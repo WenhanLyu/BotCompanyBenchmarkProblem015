@@ -51,7 +51,7 @@ public:
     void delete_entry(const std::string& index, int value);
 
 private:
-    static const int NUM_BUCKETS = 20;
+    static const int NUM_BUCKETS = 5000;
 
     // In-memory hash index for O(1) duplicate checking
     // Maps bucket_id -> set of (index, value) pairs

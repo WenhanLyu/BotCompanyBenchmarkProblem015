@@ -24,7 +24,7 @@ int BucketManager::hash_bucket(const std::string& index) const {
 
 std::string BucketManager::get_bucket_filename(int bucket_id) const {
     char filename[32];
-    snprintf(filename, sizeof(filename), "data_%02d.bin", bucket_id);
+    snprintf(filename, sizeof(filename), "data_%04d.bin", bucket_id);
     return std::string(filename);
 }
 
@@ -181,9 +181,6 @@ void BucketManager::insert_entry(const std::string& index, int value) {
 
     // Update cache with the new entry
     bucket_cache_[bucket_id].insert(key);
-
-    // Clear bucket cache to bound memory usage per operation
-    bucket_cache_.erase(bucket_id);
 }
 
 std::vector<int> BucketManager::find_values(const std::string& index) {
