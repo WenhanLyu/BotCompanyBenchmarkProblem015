@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <list>
 
 // Hash function for std::pair<std::string, int> used in bucket cache
 struct PairHash {
@@ -51,30 +52,36 @@ public:
     void delete_entry(const std::string& index, int value);
 
 private:
-    static const int NUM_BUCKETS = 5000;
+    static const int NUM_BUCKETS = 1;  // Single file approach
+    static const size_t MAX_INDEX_ENTRIES = 15000;  // Bounded cache limit
 
-    // In-memory hash index for O(1) duplicate checking
-    // Maps bucket_id -> set of (index, value) pairs
-    // Lazy-loaded on first access to each bucket
-    std::unordered_map<int, std::unordered_set<std::pair<std::string, int>, PairHash>> bucket_cache_;
+    // In-memory index for O(1) duplicate checking with LRU eviction
+    // Maps (index, value) -> file offset for bounded caching
+    std::unordered_map<std::pair<std::string, int>, int64_t, PairHash> index_;
 
-    // Compute hash bucket for an index
-    int hash_bucket(const std::string& index) const;
+    // LRU tracking structures
+    std::list<std::pair<std::string, int>> lru_list_;  // Most recent at front
+    std::unordered_map<std::pair<std::string, int>,
+                       std::list<std::pair<std::string, int>>::iterator,
+                       PairHash> lru_pos_;
 
-    // Get bucket file name for a given bucket ID
-    std::string get_bucket_filename(int bucket_id) const;
+    // Get the data file name (always "data.bin")
+    std::string get_data_filename() const;
 
-    // Load bucket cache from file (called lazily on first access)
-    void load_bucket_cache(int bucket_id);
+    // Update LRU list when an entry is accessed
+    void update_lru(const std::pair<std::string, int>& key);
 
-    // Load all entries from a bucket file into memory
-    std::vector<Entry> load_bucket(int bucket_id);
+    // Evict least recently used entry if cache is full
+    void evict_lru_if_needed();
 
-    // Save entries back to a bucket file (overwrites existing file)
-    void save_bucket(int bucket_id, const std::vector<Entry>& entries);
+    // Check if entry exists in file (for cache misses)
+    bool check_file_for_duplicate(const std::string& index, int value);
 
-    // Append a single entry to a bucket file
-    void append_to_bucket(int bucket_id, const Entry& entry);
+    // Load all entries from the data file into memory (for delete operations)
+    std::vector<Entry> load_all_entries();
+
+    // Save entries back to the data file (overwrites existing file)
+    void save_all_entries(const std::vector<Entry>& entries);
 };
 
 #endif // BUCKET_MANAGER_H
