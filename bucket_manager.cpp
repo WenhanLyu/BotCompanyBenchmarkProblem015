@@ -8,6 +8,37 @@
 BucketManager::BucketManager() {
     // Data file is created on-demand when first written
     // Index and LRU structures are initially empty
+    // Bloom filter is initially empty
+
+    // If data file exists, populate bloom filter for existing entries
+    std::string filename = get_data_filename();
+    std::ifstream file(filename, std::ios::binary);
+    if (file) {
+        uint8_t idx_length;
+        while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
+            std::string index(idx_length, '\0');
+            if (!file.read(&index[0], idx_length)) {
+                break;
+            }
+
+            int32_t value;
+            if (!file.read(reinterpret_cast<char*>(&value), sizeof(int32_t))) {
+                break;
+            }
+
+            uint8_t flags;
+            if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
+                break;
+            }
+
+            bool active = (flags == 0x01);
+            if (active) {
+                // Add to bloom filter
+                bloom_add(index, value);
+            }
+        }
+        file.close();
+    }
 }
 
 std::string BucketManager::get_data_filename() const {
@@ -34,6 +65,67 @@ void BucketManager::evict_lru_if_needed() {
         lru_pos_.erase(victim_key);
         index_.erase(victim_key);
     }
+}
+
+// Bloom filter hash function 1: FNV-1a variant
+size_t BucketManager::bloom_hash1(const std::string& index, int value) const {
+    size_t hash = 2166136261u;  // FNV offset basis
+
+    // Hash the string
+    for (unsigned char c : index) {
+        hash ^= c;
+        hash *= 16777619u;  // FNV prime
+    }
+
+    // Mix in the value
+    hash ^= static_cast<uint32_t>(value);
+    hash *= 16777619u;
+
+    return hash % BLOOM_FILTER_SIZE;
+}
+
+// Bloom filter hash function 2: Polynomial rolling hash with prime 37
+size_t BucketManager::bloom_hash2(const std::string& index, int value) const {
+    uint32_t hash = 0;
+    uint32_t prime = 37;
+
+    for (unsigned char c : index) {
+        hash = hash * prime + c;
+    }
+
+    // Mix in the value
+    hash = hash * prime + static_cast<uint32_t>(value);
+
+    return hash % BLOOM_FILTER_SIZE;
+}
+
+// Bloom filter hash function 3: Combination hash
+size_t BucketManager::bloom_hash3(const std::string& index, int value) const {
+    uint32_t hash = 5381;  // djb2 initial value
+
+    for (unsigned char c : index) {
+        hash = ((hash << 5) + hash) + c;  // hash * 33 + c
+    }
+
+    // Mix in the value with XOR and rotation
+    uint32_t val_hash = static_cast<uint32_t>(value);
+    hash ^= (val_hash + 0x9e3779b9 + (hash << 6) + (hash >> 2));
+
+    return hash % BLOOM_FILTER_SIZE;
+}
+
+// Add entry to bloom filter
+void BucketManager::bloom_add(const std::string& index, int value) {
+    bloom_filter_.set(bloom_hash1(index, value));
+    bloom_filter_.set(bloom_hash2(index, value));
+    bloom_filter_.set(bloom_hash3(index, value));
+}
+
+// Check if entry might exist in bloom filter
+bool BucketManager::bloom_contains(const std::string& index, int value) const {
+    return bloom_filter_.test(bloom_hash1(index, value)) &&
+           bloom_filter_.test(bloom_hash2(index, value)) &&
+           bloom_filter_.test(bloom_hash3(index, value));
 }
 
 bool BucketManager::check_file_for_duplicate(const std::string& index, int value) {
@@ -129,9 +221,13 @@ void BucketManager::insert_entry(const std::string& index, int value) {
         return;
     }
 
-    // Not in index - check disk if index might be incomplete
-    if (index_.size() >= MAX_INDEX_ENTRIES) {
-        // Index is full, need to check disk for entries not in cache
+    // Check bloom filter (O(1))
+    if (!bloom_contains(index, value)) {
+        // Bloom filter says "definitely not present" - safe to insert
+        // This is the fast path for 99% of inserts after cache fills
+    } else {
+        // Bloom filter says "might be present" (~1% false positive rate)
+        // Need to check file to confirm
         if (check_file_for_duplicate(index, value)) {
             // Duplicate found on disk
             return;
@@ -163,6 +259,9 @@ void BucketManager::insert_entry(const std::string& index, int value) {
     file.write(reinterpret_cast<const char*>(&flags), 1);
 
     file.close();
+
+    // Add to bloom filter
+    bloom_add(index, value);
 
     // Evict LRU entry if needed before adding new entry
     if (index_.size() >= MAX_INDEX_ENTRIES) {
@@ -252,24 +351,17 @@ void BucketManager::save_all_entries(const std::vector<Entry>& entries) {
 void BucketManager::delete_entry(const std::string& index, int value) {
     std::string filename = get_data_filename();
 
-    // Read entire file into memory
+    // Read file, collect non-deleted entries
     std::ifstream input(filename, std::ios::binary);
     if (!input) {
         // File doesn't exist, nothing to delete
         return;
     }
 
-    // Structure to hold an entry
-    struct EntryData {
-        std::string index;
-        int32_t value;
-        uint8_t flags;
-    };
-
-    std::vector<EntryData> entries;
+    // Collect entries to keep (excluding the one to delete)
+    std::string buffer;  // Binary buffer for rewriting
     bool found = false;
 
-    // Read all entries from the file
     uint8_t idx_length;
     while (input.read(reinterpret_cast<char*>(&idx_length), 1)) {
         std::string entry_index(idx_length, '\0');
@@ -291,36 +383,31 @@ void BucketManager::delete_entry(const std::string& index, int value) {
 
         // Check if this is the entry to delete
         if (!found && active && entry_index == index && entry_value == value) {
-            // Skip this entry (don't add it to the vector)
+            // Skip this entry (don't add to buffer)
             found = true;
             continue;
         }
 
-        // Add entry to vector
-        entries.push_back({entry_index, entry_value, flags});
+        // Add entry to buffer
+        buffer.push_back(idx_length);
+        buffer.append(entry_index);
+        buffer.append(reinterpret_cast<const char*>(&entry_value), sizeof(int32_t));
+        buffer.push_back(flags);
     }
 
     input.close();
 
-    // If an entry was deleted, rewrite the file and update index
+    // If entry was found, rewrite file
     if (found) {
         std::ofstream output(filename, std::ios::binary | std::ios::trunc);
         if (!output) {
             return;
         }
 
-        // Write all remaining entries back to the file
-        for (const auto& entry : entries) {
-            uint8_t idx_len = static_cast<uint8_t>(entry.index.length());
-            output.write(reinterpret_cast<const char*>(&idx_len), 1);
-            output.write(entry.index.c_str(), idx_len);
-            output.write(reinterpret_cast<const char*>(&entry.value), sizeof(int32_t));
-            output.write(reinterpret_cast<const char*>(&entry.flags), 1);
-        }
-
+        output.write(buffer.data(), buffer.size());
         output.close();
 
-        // Update index: remove the deleted entry
+        // Update index and LRU structures
         std::pair<std::string, int> key = {index, value};
         auto idx_it = index_.find(key);
         if (idx_it != index_.end()) {

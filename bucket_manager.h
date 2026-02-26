@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <list>
+#include <bitset>
 
 // Hash function for std::pair<std::string, int> used in bucket cache
 struct PairHash {
@@ -54,6 +55,7 @@ public:
 private:
     static const int NUM_BUCKETS = 1;  // Single file approach
     static const size_t MAX_INDEX_ENTRIES = 15000;  // Bounded cache limit
+    static const size_t BLOOM_FILTER_SIZE = 800000;  // ~100 KB for 1% FP rate
 
     // In-memory index for O(1) duplicate checking with LRU eviction
     // Maps (index, value) -> file offset for bounded caching
@@ -64,6 +66,11 @@ private:
     std::unordered_map<std::pair<std::string, int>,
                        std::list<std::pair<std::string, int>>::iterator,
                        PairHash> lru_pos_;
+
+    // Bloom filter for probabilistic duplicate detection
+    // Never has false negatives: if says "not present", guaranteed absent
+    // ~1% false positive rate with 3 hash functions
+    std::bitset<BLOOM_FILTER_SIZE> bloom_filter_;
 
     // Get the data file name (always "data.bin")
     std::string get_data_filename() const;
@@ -76,6 +83,18 @@ private:
 
     // Check if entry exists in file (for cache misses)
     bool check_file_for_duplicate(const std::string& index, int value);
+
+    // Bloom filter operations
+    // Compute hash functions for bloom filter (k=3 for optimal FP rate)
+    size_t bloom_hash1(const std::string& index, int value) const;
+    size_t bloom_hash2(const std::string& index, int value) const;
+    size_t bloom_hash3(const std::string& index, int value) const;
+
+    // Add entry to bloom filter
+    void bloom_add(const std::string& index, int value);
+
+    // Check if entry might exist (true = maybe, false = definitely not)
+    bool bloom_contains(const std::string& index, int value) const;
 
     // Load all entries from the data file into memory (for delete operations)
     std::vector<Entry> load_all_entries();
