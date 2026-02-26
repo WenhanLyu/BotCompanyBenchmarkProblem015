@@ -147,31 +147,129 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 **Verification**: Marcus confirmed zero temp files created in all edge cases
 
 ### M5.1.3: Fix O(n²) Insert Performance with In-Memory Index
-**Status**: 🔄 IN PROGRESS
+**Status**: ❌ FAILED - Wrong architectural direction taken
+**Cycles Used**: 4/4 (all wasted)
+**Root Cause**: Ares's team implemented bounded cache instead of unbounded cache
+**What Happened**:
+- Elena implemented single-file architecture with bounded LRU cache (commit 6d93bcb)
+- MAX_INDEX_ENTRIES = 15,000 with LRU eviction
+- After cache fills, every insert scans entire file → O(n²) behavior WORSE than before
+**Catastrophic Results** (Felix & Sophia evaluations):
+- Random test: 77.17s (4.8x over 16s limit) ❌
+- Insert-heavy: 202.42s (12.7x over limit) ❌
+- Collision: 77.48s (4.8x over limit) ❌
+- Memory: 41-71 MB (7-12x over 6 MiB limit) ❌
+- File count: 1 ✅ (only success)
+**Why It Failed**:
+1. **Bounded cache without bloom filter** = worst of both worlds
+   - After 15K entries, degrades to O(n²) file scans
+   - LRU structures add 3x memory overhead
+   - Delete loads entire file into memory
+2. **Wrong optimization target**: Optimized file count while violating ALL other constraints
+3. **Spec misinterpretation**: Felix thought in-memory cache violated spec, but Maya proved it's allowed
+
+**Key Findings from Post-Mortem**:
+- Lucas (Issue #50): "Bounded cache fundamentally flawed without bloom filter"
+- Sophia (Issue #49): "85% OJ TLE probability, DO NOT SUBMIT"
+- Maya (Issue #51): "Unbounded cache IS allowed by spec - 'current operation' = program execution"
+**Lesson Learned**:
+- Unbounded cache needed BUT 100K entries × 70 bytes = 7 MB exceeds 6 MiB limit
+- Must use bounded cache (15K entries ≈ 1 MB) + bloom filter (~125 KB) to prevent file scans
+- 20-file architecture is required (not 1 file, not 5000 files)
+
+### M5.1.4: Add Bloom Filter to Prevent O(n²) File Scans
+**Status**: 🎯 READY TO START
 **Cycles Allocated**: 3
-**Description**: Eliminate O(n²) sequential scan in insert_entry by using session-level in-memory hash index
-**Critical Issue**:
-- Current: 77.48s CPU on collision test (4.8x over 16s limit, 85% TLE probability)
-- Root Cause: Full bucket scan on every insert (lines 131-162 in bucket_manager.cpp)
-- Impact: 17.6x slowdown vs random test, 14.9x more instructions
-**Solution**: Session-level in-memory hash index
-- Use `std::unordered_set<std::pair<std::string, int>>` to track existing (index, value) pairs
-- Populate on first access to each bucket (lazy loading)
-- O(1) duplicate checking instead of O(n) sequential scan
-- Expected: 15x speedup on collision scenarios
-**Implementation Details**:
-- Add private member: `std::unordered_map<int, std::unordered_set<std::pair<std::string, int>>> bucket_cache_`
-- Modify `insert_entry`: Check cache first, scan file only on cache miss to populate
-- Modify `delete_entry`: Update cache when entry deleted
-- Memory estimate: 100K pairs * 68 bytes = 6.8 MB, fits within spec (duplicate count < 100K)
+**Description**: Add Bloom filter to bounded cache implementation to eliminate O(n²) degradation after cache fills
+**Why Current Implementation Fails** (Commit 6d93bcb Analysis):
+- Single file with bounded cache (15K entries max) + LRU eviction
+- After 15K entries, EVERY insert triggers full file scan via `check_file_for_duplicate()`
+- Result: O(n²) complexity → 77-202 seconds (4.8-12.7x over 16s limit)
+- Memory: 41-71 MB due to LRU overhead + delete loading entire file
+**Root Cause**: Bounded cache without probabilistic filter
+- Can't cache all entries (7 MB exceeds 6 MiB limit)
+- Can't scan file on every miss (O(n²) too slow)
+- **Solution**: Bloom filter for negative lookups
+**What Is Bloom Filter**:
+- Probabilistic data structure for set membership testing
+- Space: ~100-150 KB for 100K entries with 1% false positive rate
+- Operations: O(1) add, O(1) query
+- Property: Never has false negatives (if filter says "not present", it's guaranteed absent)
+- False positive rate: ~1% (tunable)
+**Implementation Plan**:
+1. **Add bloom filter** (std::bitset or custom bit array):
+   ```cpp
+   // In bucket_manager.h
+   std::bitset<800000> bloom_filter_;  // ~100 KB for 100K entries
+
+   // 3 hash functions for k=3 (optimal for 1% FP rate)
+   size_t hash1(const std::string& index, int value);
+   size_t hash2(const std::string& index, int value);
+   size_t hash3(const std::string& index, int value);
+   ```
+
+2. **Modify insert_entry** (bucket_manager.cpp:120-162):
+   ```cpp
+   // Check bounded index first
+   if (index_.find(key) != index_.end()) {
+       return;  // Duplicate in cache
+   }
+
+   // Check bloom filter
+   if (!bloom_filter_contains(index, value)) {
+       // DEFINITELY not a duplicate - safe to insert
+       append_to_file(index, value);
+       add_to_bloom_filter(index, value);
+       add_to_index_with_eviction(key);
+   } else {
+       // MIGHT be duplicate - check file
+       if (check_file_for_duplicate(index, value)) {
+           return;  // Duplicate found
+       }
+       // Not a duplicate, insert
+       append_to_file(index, value);
+       add_to_bloom_filter(index, value);
+       add_to_index_with_eviction(key);
+   }
+   ```
+
+3. **Fix delete memory bloat** (bucket_manager.cpp:252-301):
+   - Current: Loads entire file into vector (causes 41-71 MB spikes)
+   - Solution: Use in-place rewrite (read → close → truncate write) - same as M5.1.2 fix
+   - Or use streaming rewrite with temporary buffer (not temp file)
+
+4. **Reduce LRU overhead**:
+   - Current: 3 data structures (index_, lru_list_, lru_pos_) = 3x memory overhead
+   - Alternative: Use single std::unordered_map + timestamp for simpler LRU
+   - Or accept current overhead if bloom filter solves performance
+
+**Expected Impact**:
+- Bloom filter false positive rate: ~1%
+- 99% of inserts after cache full: O(1) (bloom filter says "not present")
+- 1% of inserts: O(n) file scan (bloom filter false positive)
+- Overall: 99x improvement over current O(n²) behavior
+- **Estimated performance**:
+  - Random test: 77s → **5-8s** ✅
+  - Insert-heavy: 202s → **8-12s** ✅
+  - Collision: 77s → **6-10s** ✅
+- **Memory**: Bloom filter ~100 KB + bounded cache ~1.5 MB + overhead ~1 MB = **~3 MB** ✅
+
 **Success Criteria**:
-- ✅ Random test: <16s (currently 4.40s)
-- ✅ Insert-heavy test: <16s (currently 10.72s)
-- ✅ Collision test: <16s (currently 77.48s - MUST FIX)
-- ✅ Memory: <6 MiB for 100K operations
-- ✅ Sample test still passes
-- ✅ All correctness guarantees maintained
-**Rationale**: Spec prohibits loading unnecessary data but session-level metadata for duplicate checking is reasonable interpretation and necessary for O(1) performance
+- ✅ All three performance tests: <16s
+- ✅ Memory: <6 MiB (target <4 MiB for safety margin)
+- ✅ File count: ≤20 files (current: 1 file)
+- ✅ Sample test: passes with correct output
+- ✅ No regression on correctness (bloom filter never causes false negatives)
+
+**Risks**:
+- **LOW**: Bloom filter is well-understood, easy to implement
+- Bit manipulation is straightforward with std::bitset
+- False positive rate tunable via filter size and hash count
+- Main risk: Bloom filter implementation bugs → mitigate with thorough testing
+
+**Alternative If This Fails**:
+- Switch to 20-bucket architecture (commit c5147e3) with adaptive cache eviction
+- Request clarification on 20-file limit interpretation
 
 ## Key Constraints
 - Memory limit: 5-6 MiB per test case
