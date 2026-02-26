@@ -4,13 +4,13 @@
 Implement a high-quality file-based key-value database for ACMOJ Problem 2545 that handles insert/delete/find operations with strict memory constraints (5-6 MiB).
 
 ## Current Status
-- **Phase**: PROJECT COMPLETE ✅
-- **Date**: 2026-02-25 (Cycle 25)
+- **Phase**: ACTIVE - M5.1 in progress
+- **Date**: 2026-02-25 (Cycle 26)
 - **Submission Budget**: 5 attempts remaining (2 used: 750119, 750120)
-- **State**: All milestones complete - code ready for external OJ evaluation
-- **Final Implementation**: Polynomial rolling hash with streaming I/O
-- **Performance**: Memory 1.5 MiB (25% of limit), Time 14.4s (90% of limit)
-- **Quality Assessment**: 3 independent evaluators recommend OJ submission (80-85% confidence)
+- **State**: M5 revealed critical blockers upon re-evaluation - fixing before OJ submission
+- **Current Implementation**: Polynomial rolling hash with streaming I/O
+- **Performance**: Memory 1.5 MiB (excellent), Time 15-19s depending on optimization (OVER LIMIT without fixes)
+- **Critical Issues Found**: CMakeLists.txt missing -O2, file count violation, O(n^2) insert performance
 
 ## Architecture Decision
 
@@ -89,28 +89,61 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
 - Persistence tests fail (data written to different buckets than expected)
 
 ### M5: Fix Hash Portability Issue
-**Status**: ✅ COMPLETE
+**Status**: ✅ COMPLETE → ❌ CRITICAL ISSUES FOUND IN RE-EVALUATION
 **Actual Cycles**: 3 (Ares implementation) + evaluation (Athena)
 **Description**: Replace non-portable std::hash with deterministic hash function
 **Implementation**:
 - Elena replaced std::hash with polynomial rolling hash (prime 31)
 - Uses uint32_t for fixed-width arithmetic (portable across platforms)
 - Correctly casts char to unsigned char (handles platform signedness)
-- Felix verified determinism and performance (14.850s, under 16s limit)
-**Verification**:
-- Lucas: ✅ Architecture approved - hash is portable and deterministic (80% confidence)
-- Maya: ✅ Quality audit passed - code excellent (9.2/10), ready for OJ (85% confidence)
-- Sophia: ✅ Research approved - implementation follows all best practices
+**Initial Verification (Cycle 25)**:
+- Lucas: ✅ 80% confidence
+- Maya: ✅ 85% confidence (9.2/10 code quality)
+- Sophia: ✅ Approved
+- Athena: Marked PROJECT COMPLETE
+**Re-evaluation (Cycle 26 - BLIND)**:
+- Code Quality Auditor: ❌ NO-GO
+- Performance Evaluator: ❌ NO-GO
+**CRITICAL ISSUES FOUND**:
+1. **CMakeLists.txt missing -O2**: OJ builds without optimization → 18.6s (FAILS 16s limit)
+2. **File count violation**: Delete creates `.tmp` files → 21 files (exceeds 20-file limit)
+3. **O(n^2) insert performance**: Full bucket scan on every insert → 15-19s depending on test case
+**Root Cause of Missed Issues**:
+- Cycle 25 evaluators didn't test actual OJ build process (without CMAKE_BUILD_TYPE)
+- Didn't measure worst-case performance scenarios
+- Underestimated time margin risk
+
+### M5.1: Fix OJ Submission Blockers
+**Status**: 🔄 IN PROGRESS
+**Cycles Budget**: 3
+**Description**: Fix three critical blockers preventing successful OJ submission
+**Required Fixes**:
+1. **CMakeLists.txt optimization** (CRITICAL, EASY)
+   - Move `-O2` from CMAKE_CXX_FLAGS_RELEASE to base CMAKE_CXX_FLAGS
+   - Ensure OJ build process includes optimization
+2. **File count violation** (CRITICAL, DESIGN CHANGE)
+   - Eliminate `.tmp` file creation in delete operation
+   - Options: in-place rewrite, flag-based soft delete, or alternative strategy
+   - Must stay within 20-file limit at all times
+3. **Insert performance optimization** (CRITICAL, ARCHITECTURAL)
+   - Current: O(n^2) due to full bucket scan on every insert
+   - Options:
+     a. Remove duplicate check entirely (verify if spec allows)
+     b. Optimize duplicate check (sorted bucket + binary search)
+     c. Use in-memory bloom filter or hash set for current session
+   - Target: 100K operations must complete in <14s (leave 2s margin)
 **Success Criteria**:
-- ✅ Hash function produces identical results across platforms (polynomial rolling hash)
-- ✅ All local tests pass (sample test, 100K stress test, determinism tests)
-- ✅ Memory ≤ 6 MiB: 1.5 MiB average (75% headroom)
-- ✅ Time ≤ 16s: 14.4s average on 100K ops (9% margin, 75% pass rate)
-- ✅ Ready for re-submission to OJ
-**Completion Notes**:
-- All three independent evaluators (Lucas, Maya, Sophia) recommend OJ submission
-- Code is ready for external OJ evaluation per project spec
-- Submission budget: 5 attempts remaining (2 used previously)
+- ✅ CMakeLists.txt produces optimized binary in standard OJ build process
+- ✅ File count never exceeds 20 during any operation
+- ✅ 100K random operations complete in <14s (with 2s margin below 16s limit)
+- ✅ 100K insert-heavy operations complete in <14s
+- ✅ All functional correctness tests still pass
+- ✅ Memory usage stays ≤6 MiB
+**Verification**:
+- Build with OJ-equivalent process: `cmake . && make` (no CMAKE_BUILD_TYPE)
+- Test with 100K random ops, 100K insert-heavy ops, edge cases
+- Verify file count with `lsof` during operations
+- Fresh blind evaluation after fixes
 
 ## Key Constraints
 - Memory limit: 5-6 MiB per test case
@@ -175,26 +208,36 @@ Implement a high-quality file-based key-value database for ACMOJ Problem 2545 th
   - Standard library implementations can vary across platforms
 - **Next Action**: Replace std::hash with portable hash (M5)
 
-### Cycle 7-9 (M5 Implementation & Verification - Ares/Athena)
-- **Achievement**: Hash portability issue resolved
-  - Cycle 7: Elena replaced std::hash with FNV-1a (commit 7f09162)
-  - Cycle 8: Elena switched to polynomial rolling hash (commit fecdea0) - FNV-1a was too slow (24s)
-  - Cycle 9: Felix verified implementation + Athena's team evaluated (Lucas, Maya, Sophia)
-- **Final Implementation**: Polynomial rolling hash with prime 31
-  - Algorithm: `hash = hash * 31u + (unsigned char)c` for each character
-  - Fixed-width types (uint32_t) ensure consistent overflow behavior
-  - Portable across all platforms (standard competitive programming approach)
-- **Performance Results**:
-  - Memory: 1.5 MiB (excellent, 75% headroom)
-  - Time: 14.4s average (tight, 9% margin, 75% pass rate)
-  - Correctness: All tests pass (sample, stress, edge cases)
-- **Independent Evaluation**: All three evaluators (Lucas 80%, Maya 85%, Sophia approved) recommend OJ submission
-- **Key Lesson**: Trade-offs in hash algorithm selection
-  - FNV-1a: More portable but slower (24s, 50% regression)
-  - Polynomial (31): Fast AND portable (14.4s, matches original std::hash performance)
-  - Sometimes the "simpler" algorithm (polynomial) is better than the "standard" one (FNV-1a)
-- **Risk Assessment**: Moderate risk due to tight time margin (9%), but acceptable
-  - OJ typically measures CPU time (more consistent than wall clock)
-  - Three independent evaluators agree code is ready
-  - 5 submission attempts remaining if optimization needed
-- **Final Verdict**: M5 COMPLETE - Code ready for external OJ evaluation
+### Cycle 7-9 (M5 Implementation - Ares/Athena)
+- **Achievement**: Hash portability fixed
+  - Cycle 7: Elena replaced std::hash with FNV-1a (too slow at 24s)
+  - Cycle 8: Elena switched to polynomial rolling hash (14.4s)
+  - Cycle 9: Felix verified + Athena's team evaluated (Lucas, Maya, Sophia)
+- **Cycle 25 Evaluation**: Three evaluators recommended OJ submission (80-85% confidence)
+- **Decision**: Athena marked PROJECT COMPLETE
+- **Outcome**: Orchestrator flagged "Implementation Deadline Missed"
+
+### Cycle 26 (Critical Re-evaluation - Athena)
+- **Action**: Hired two fresh evaluators for BLIND assessment (no prior reports)
+- **Evaluator 1 (Code Quality Auditor)**:
+  - Hash function: ✅ PASS (portable and deterministic)
+  - Correctness: ✅ PASS (all operations logically correct)
+  - CRITICAL ISSUE 1: File count violation (delete creates `.tmp` files → 21 files)
+  - CRITICAL ISSUE 2: O(n^2) insert complexity (15-21s estimated for 100K ops)
+  - Recommendation: ❌ NO-GO
+- **Evaluator 2 (Performance Tester)**:
+  - Build: ✅ PASS, Sample test: ✅ PASS, Memory: ✅ PASS (1.3-1.8 MiB)
+  - CRITICAL ISSUE 1: CMakeLists.txt doesn't apply -O2 in OJ build → 18.6s (FAILS)
+  - CRITICAL ISSUE 2: O(n^2) insert performance → 15.2s (borderline), 16.9s (insert-heavy, FAILS)
+  - Measured worst case: 129s for same-key inserts (CATASTROPHIC)
+  - Recommendation: ❌ NO-GO
+- **Key Findings**:
+  1. CMakeLists.txt missing -O2 flag for OJ build process
+  2. Delete operation creates temporary files (violates 20-file limit)
+  3. Insert operation has O(n^2) complexity (too slow for 100K ops)
+- **Decision**: M5 NOT READY - Define M5.1 to fix critical blockers
+- **Key Lesson**:
+  - Cycle 25 evaluators UNDERESTIMATED risks (didn't test OJ build, didn't test worst cases)
+  - Fresh blind evaluation catches issues familiar evaluators miss
+  - "Tight margin" (9%) is NOT acceptable when multiple risks compound
+  - Always test actual OJ build process, not just local optimized build
