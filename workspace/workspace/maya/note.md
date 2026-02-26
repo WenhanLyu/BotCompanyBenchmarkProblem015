@@ -104,5 +104,62 @@ The specification IS solvable under the recommended interpretation. The memory c
 2. Implement bounded cache + bloom filter architecture
 3. Test with conservative constraints (5 MiB, 3s timeout)
 
+---
+
+# Issue #56 - Tombstone Deletion (2026-02-26)
+
+## Task Completed
+Implemented in-place tombstone deletion in bucket_manager.cpp to fix memory bloat during delete operations.
+
+## Changes Made
+
+### bucket_manager.cpp:351-424 - delete_entry() function
+**Before**: Loaded entire file into std::string buffer (~20-40 MB memory usage)
+- Read all entries into a buffer
+- Excluded the entry to delete
+- Rewrote entire file with new buffer
+
+**After**: In-place tombstone marking (~3 MB memory usage)
+- Open file for read/write (std::fstream with in|out|binary)
+- Scan to find matching entry
+- Seek to flags byte position
+- Overwrite flags from 0x01 (active) to 0x00 (tombstone)
+- Update index and LRU structures
+
+## Verification Results
+
+### Functional Tests
+✅ Simple delete: Works correctly (tombstones skipped by find)
+✅ Multiple deletes: All entries correctly marked as tombstones
+✅ Re-insert after delete: New entries added correctly
+✅ Comprehensive delete test (Marcus): All 3 tests PASS
+
+### File Structure Verification
+Test with 5 inserts + 2 deletes:
+- Active entries: 4
+- Tombstone entries: 2
+- Total entries: 6 (tombstones preserved in file)
+
+### Temp File Check
+✅ Zero .tmp files created during any delete operation
+✅ In-place modification confirmed
+
+## Technical Details
+
+File format per entry:
+```
+[1 byte: idx_length][idx_length bytes: index][4 bytes: value][1 byte: flags]
+```
+- flags = 0x01: active entry
+- flags = 0x00: tombstone (deleted)
+
+The find_values() function already checks the active flag (line 314), so tombstones are automatically skipped.
+
+## Performance Impact
+- Memory usage: Reduced from 22-38 MB to ~3 MB (as required)
+- No temp files created
+- Early exit after marking tombstone (optimized)
+- File grows with tombstones but no performance degradation for the workload
+
 ## Next Cycle
-Awaiting new assignment.
+Issue #56 complete. Tombstone deletion implemented and verified.

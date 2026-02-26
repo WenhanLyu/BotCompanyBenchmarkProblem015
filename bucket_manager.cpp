@@ -351,31 +351,33 @@ void BucketManager::save_all_entries(const std::vector<Entry>& entries) {
 void BucketManager::delete_entry(const std::string& index, int value) {
     std::string filename = get_data_filename();
 
-    // Read file, collect non-deleted entries
-    std::ifstream input(filename, std::ios::binary);
-    if (!input) {
+    // Open file for reading and writing (in-place modification)
+    std::fstream file(filename, std::ios::in | std::ios::out | std::ios::binary);
+    if (!file) {
         // File doesn't exist, nothing to delete
         return;
     }
 
-    // Collect entries to keep (excluding the one to delete)
-    std::string buffer;  // Binary buffer for rewriting
+    // Scan file to find the entry to delete
     bool found = false;
-
     uint8_t idx_length;
-    while (input.read(reinterpret_cast<char*>(&idx_length), 1)) {
+
+    while (file.read(reinterpret_cast<char*>(&idx_length), 1)) {
         std::string entry_index(idx_length, '\0');
-        if (!input.read(&entry_index[0], idx_length)) {
+        if (!file.read(&entry_index[0], idx_length)) {
             break;
         }
 
         int32_t entry_value;
-        if (!input.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
+        if (!file.read(reinterpret_cast<char*>(&entry_value), sizeof(int32_t))) {
             break;
         }
 
+        // Get position before reading flags (this is where we'll write if we need to delete)
+        std::streampos flags_pos = file.tellg();
+
         uint8_t flags;
-        if (!input.read(reinterpret_cast<char*>(&flags), 1)) {
+        if (!file.read(reinterpret_cast<char*>(&flags), 1)) {
             break;
         }
 
@@ -383,31 +385,20 @@ void BucketManager::delete_entry(const std::string& index, int value) {
 
         // Check if this is the entry to delete
         if (!found && active && entry_index == index && entry_value == value) {
-            // Skip this entry (don't add to buffer)
+            // Mark as deleted by overwriting flags byte with tombstone
+            file.seekp(flags_pos);  // Seek to flags position for writing
+            uint8_t tombstone = 0x00;
+            file.write(reinterpret_cast<const char*>(&tombstone), 1);
+            file.flush();  // Ensure write is committed
             found = true;
-            continue;
+            break;  // Exit early once we've marked it as deleted
         }
-
-        // Add entry to buffer
-        buffer.push_back(idx_length);
-        buffer.append(entry_index);
-        buffer.append(reinterpret_cast<const char*>(&entry_value), sizeof(int32_t));
-        buffer.push_back(flags);
     }
 
-    input.close();
+    file.close();
 
-    // If entry was found, rewrite file
+    // Update index and LRU structures if entry was found
     if (found) {
-        std::ofstream output(filename, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            return;
-        }
-
-        output.write(buffer.data(), buffer.size());
-        output.close();
-
-        // Update index and LRU structures
         std::pair<std::string, int> key = {index, value};
         auto idx_it = index_.find(key);
         if (idx_it != index_.end()) {
